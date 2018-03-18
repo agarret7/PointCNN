@@ -2,4 +2,4 @@ init:
 	pip3 install -r requirements.txt
 
 test:
-	nosetests tests
+	python3.5 -m unittest discover

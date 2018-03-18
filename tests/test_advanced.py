@@ -1,7 +1,5 @@
 import unittest
 
-from context import pointcnn
-
 class AdvancedTests(unittest.TestCase):
     """ Basic test cases """
 
