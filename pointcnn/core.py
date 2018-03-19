@@ -90,7 +90,7 @@ class PointCNN(nn.Module):
             OUT
             ======
             P_idx : (N, N_neighbors) Array of indices into P such that
-            P[P_idx] is the set of points
+            P[P_idx] is the set of points in the "region" around p.
 
         a representative point p and a point cloud P. From these it returns an
         array of N_neighbors 
@@ -109,8 +109,8 @@ class PointCNN(nn.Module):
         Selects 
         :type P_idx: FloatTensor (N, N_neighbors)
         :type P: FloatTensor (N, *, *)
-        :param P_idx: Indices of points in region to be selected.
-        :param P: Point cloud to select regional points from.
+        :param P_idx: Indices of points in region to be selected
+        :param P: Point cloud to select regional points from
         """
         return torch.stack([
             P[n,:,:].index_select(0, idx) for n, idx in torch.unbind(P_idx, dim = 0)
@@ -137,3 +137,16 @@ class PointCNN(nn.Module):
             for p in torch.unbind(ps, dim = 1)
         ], dim = 1)
         return inp_regions
+
+def knn_indices_func(p, P):
+    """
+    Indexing function based on K-Nearest Neighbors search.
+    :type p: FloatTensor (N, D)
+    :type P: FloatTensor (N, *, D)
+    :rtype: FloatTensor (N, N_neighbors)
+    :param p: Representative point
+    :param P: Point cloud to get indices from
+    :return: Array of indices, P_idx, into P such that P[P_idx] is the set
+    of points in the "region" around p.
+    """
+    raise NotImplementedError("Implement me!")
