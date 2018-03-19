@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import numpy as np
+from sklearn.neighbors import NearestNeighbors
+
+from context import pytorch_knn_cuda
+KNN = pytorch_knn_cuda.KNearestNeighbor
 
 def MLP(layer_sizes, activation_func = nn.ReLU()):
     """
@@ -84,12 +88,13 @@ class PointCNN(nn.Module):
         :param r_indices_func: Selector function of the type,
             INP 
             ======
-            p : (N, D) Representative point
-            P : (N, *, D) Point cloud
+            ps : (N, N_rep, D) Representative points
+            P  : (N, *, D) Point cloud
+            N_neighbors : Number of points for each region.
 
             OUT
             ======
-            P_idx : (N, N_neighbors) Array of indices into P such that
+            P_idx : (N, N_rep, N_neighbors) Array of indices into P such that
             P[P_idx] is the set of points in the "region" around p.
 
         a representative point p and a point cloud P. From these it returns an
@@ -101,44 +106,45 @@ class PointCNN(nn.Module):
         if C_lifted == None:
             C_lifted = C_in  # Not optimal?
 
-        self.r_filter = r_filter
+        self.r_indices_func = r_indices_func
         self.x_conv = XConv(C_in, C_out, D, N_neighbors, C_lifted, mlp_width)
 
-    def select_region(self, P_idx, P):
+    def select_region(self, P, P_idx):
         """
         Selects 
+        :type P: FloatTensor (N, *, D)
         :type P_idx: FloatTensor (N, N_neighbors)
-        :type P: FloatTensor (N, *, *)
-        :param P_idx: Indices of points in region to be selected
+        :rtype P_region: FloatTensor (N_rep, N_neighbors, D)
         :param P: Point cloud to select regional points from
+        :param P_idx: Indices of points in region to be selected
         """
-        return torch.stack([
-            P[n,:,:].index_select(0, idx) for n, idx in torch.unbind(P_idx, dim = 0)
+        regions = torch.stack([
+            P[n][idx,:] for n, idx in enumerate(torch.unbind(P_idx, dim = 0))
         ], dim = 0)
+        return regions
 
     def forward(self, ps, P, F):
         """
         Given a set of representative points, a point cloud, and its
         corresponding features, return a new set of representative points with
         features projected from the point cloud.
-        :type p: FloatTensor (N, *, D)
+        :type ps: FloatTensor (N, *, D)
         :type P: FloatTensor (N, N_neighbors, D)
         :type F: FloatTensor (N, N_neighbors, C_in)
         :rtype:  FloatTensor (TODO: shape)
-        :param p: Representative point
+        :param ps: Representative points
         :param P: Regional point cloud such that F[:,p_idx,:] is the feature associated with P[:,p_idx,:]
         :param F: Regional features such that P[:,p_idx,:] is the feature associated with F[:,p_idx,:]
         :return:
         """
-        # (N, *, N_neighbors, D)
-        P_idx = self.r_indices_func(p, P)
+        P_idx = self.r_indices_func(ps, P, N_neighbors)
         inp_regions = torch.stack([
-            self.x_conv(p, self.select_region(P, P_idx), self.select_region(F, P_idx))
-            for p in torch.unbind(ps, dim = 1)
+            self.x_conv(p, self.select_region(P, P_idx[:,n]), self.select_region(F, P_idx[:,n]))
+            for n, p in enumerate(torch.unbind(ps, dim = 1))
         ], dim = 1)
         return inp_regions
 
-def knn_indices_func(p, P):
+def knn_indices_func(ps, P, k):
     """
     Indexing function based on K-Nearest Neighbors search.
     :type p: FloatTensor (N, D)
@@ -149,4 +155,41 @@ def knn_indices_func(p, P):
     :return: Array of indices, P_idx, into P such that P[P_idx] is the set
     of points in the "region" around p.
     """
-    raise NotImplementedError("Implement me!")
+    ps = ps.data.numpy()
+    P = P.data.numpy()
+
+    def single_batch_knn(p, P_particular):
+        nbrs = NearestNeighbors(k, algorithm = "ball_tree").fit(p)
+        indices = nbrs.kneighbors(P_particular)[1]
+        return indices
+
+    region_idx = np.stack([
+        single_batch_knn(p, P[n]) for n, p in enumerate(ps)
+    ], axis = 0)
+    return torch.from_numpy(region_idx)
+
+if __name__ == "__main__":
+    np.random.seed(0)
+
+    N = 4
+    num_points = 5000
+    N_rep = 1000
+    D = 3
+    C_in = 8
+    C_out = 32
+    N_neighbors = 100
+
+    model = PointCNN(C_in, C_out, D, N_neighbors, knn_indices_func)
+
+    test_P  = np.random.rand(N,num_points,D).astype(np.float32)
+    test_F  = np.random.rand(N,num_points,C_in).astype(np.float32)
+    idx = np.random.choice(test_P.shape[1], N_rep, replace = False)
+    test_ps = test_P[:,idx,:]
+
+    test_P = Variable(torch.from_numpy(test_P))
+    test_F = Variable(torch.from_numpy(test_F))
+    test_ps = Variable(torch.from_numpy(test_ps))
+
+    print(test_P)
+    out = model(test_ps, test_P, test_F)
+    print(out)
