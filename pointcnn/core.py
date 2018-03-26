@@ -8,10 +8,10 @@ import matplotlib.pyplot as plt
 
 try:
     from .util import knn_indices_func, MLP, BatchNorm, endchannels
-    # from .context import timed
+    from .context import timed
 except SystemError:
     from util import knn_indices_func, MLP, BatchNorm, endchannels
-    # from context import timed
+    from context import timed
 
 class XConv(nn.Module):
     """
@@ -42,13 +42,14 @@ class XConv(nn.Module):
         self.N_rep = N_rep
 
         # Additional processing layers
-        self.pts_batchnorm = nn.BatchNorm2d(N_rep, momentum = 0.9)
+        self.pts_batchnorm = BatchNorm(2, D, momentum = 0.9)
+        # self.pts_batchnorm = BatchNorm(BatchNorm())
 
         # Main dense linear layers
         self.mlp_lift = MLP(np.around(np.geomspace(D, self.C_lifted, num = mlp_width)).astype(int))
-        self.mid_conv = endchannels(nn.Conv2d(D, N_neighbors, 1))
+        self.mid_conv = endchannels(nn.Conv2d(D, N_neighbors, 1).cuda())
         self.mlp = MLP(np.around(np.geomspace(N_neighbors, N_neighbors)).astype(int))  # Somehow, original code has K x K.
-        self.end_conv = endchannels(nn.Conv2d(C_lifted + C_in, C_out, (N_neighbors, 1), groups = C_out))
+        self.end_conv = endchannels(nn.Conv2d(C_lifted + C_in, C_out, (N_neighbors, 1), groups = C_out).cuda())
 
         # Params for kernel initialization.
         self.K = nn.Parameter(torch.FloatTensor(C_out, C_in + self.C_lifted, N_neighbors))
@@ -136,6 +137,7 @@ class PointCNN(nn.Module):
         ], dim = 0)
         return regions
 
+    # @timed.timed
     def forward(self, ps, P, F):
         """
         Given a set of representative points, a point cloud, and its
@@ -150,14 +152,14 @@ class PointCNN(nn.Module):
         :param F: Regional features such that P[:,p_idx,:] is the feature associated with F[:,p_idx,:]
         :return:
         """
-        P_idx = self.r_indices_func(ps.cpu(), P.cpu(), N_neighbors)
-        P_regional = self.select_region(P, P_idx)
-        if False:
+        P_idx = self.r_indices_func(ps.cpu(), P.cpu(), N_neighbors).cuda()  # This step takes ~97% of the time.
+        P_regional = self.select_region(P, P_idx)                           # Prime target for optimization: KNN on GPU.
+        if True:
             # Draw neighborhood points, for debugging.
             t = 23
             n = 3
-            test_point = ps[n,t,:].data.numpy()
-            neighborhood = P_regional[n,t,:,:].data.numpy()
+            test_point = ps[n,t,:].cpu().data.numpy()
+            neighborhood = P_regional[n,t,:,:].cpu().data.numpy()
             plt.scatter(P[n][:,0], P[n][:,1])
             plt.scatter(test_point[0], test_point[1], s = 100, c = 'green')
             plt.scatter(neighborhood[:,0], neighborhood[:,1], s = 100, c = 'red')
@@ -190,19 +192,20 @@ if __name__ == "__main__":
         num_points = 1000
         N_rep = 50
         D = 2
-        C_in = 64
-        C_out = 128
-        N_neighbors = 10
+        C_in = 128
+        C_out = 256
+        N_neighbors = 5
 
-        model = PointCNN(C_in, C_out, D, N_neighbors, N_rep, knn_indices_func)
+        model = PointCNN(C_in, C_out, D, N_neighbors, N_rep, knn_indices_func).cuda()
 
         test_P  = np.random.rand(N,num_points,D).astype(np.float32)
         test_F  = np.random.rand(N,num_points,C_in).astype(np.float32)
         idx = np.random.choice(test_P.shape[1], N_rep, replace = False)
         test_ps = test_P[:,idx,:]
 
-        test_P = Variable(torch.from_numpy(test_P))
-        test_F = Variable(torch.from_numpy(test_F))
-        test_ps = Variable(torch.from_numpy(test_ps))
+        test_P = Variable(torch.from_numpy(test_P)).cuda()
+        test_F = Variable(torch.from_numpy(test_F)).cuda()
+        test_ps = Variable(torch.from_numpy(test_ps)).cuda()
 
-        out = model(test_ps, test_P, test_F)
+        for _ in range(10):
+            out = model(test_ps, test_P, test_F)

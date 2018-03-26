@@ -1,8 +1,23 @@
+import time
+
 import torch
 import torch.nn as nn
 
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
+
+try:
+    from .context import pytorch_knn_cuda
+except SystemError:
+    from context import pytorch_knn_cuda
+
+def endchannels(f, make_contiguous = False):
+    def wrapped_func(x):
+        if make_contiguous:
+            return torch.transpose(f(torch.transpose(x, 1, -1).contiguous()), -1, 1)
+        else:
+            return torch.transpose(f(torch.transpose(x, 1, -1)), -1, 1)
+    return wrapped_func
 
 class BatchNorm(nn.Module):
     """
@@ -25,14 +40,6 @@ class BatchNorm(nn.Module):
             raise ValueError("Dimensionality %i not supported" % D)
 
         self.forward = endchannels(self.bn, make_contiguous = True)
-
-def endchannels(f, make_contiguous = False):
-    def wrapped_func(x):
-        if make_contiguous:
-            return torch.transpose(f(torch.transpose(x, 1, -1).contiguous()), -1, 1)
-        else:
-            return torch.transpose(f(torch.transpose(x, 1, -1)), -1, 1)
-    return wrapped_func
 
 def MLP(layer_sizes, activation_layer = nn.ReLU(), batch_norm = True):
     """
@@ -95,7 +102,6 @@ def knn_indices_func(ps, P, k):
     P = P.data.numpy()
 
     def single_batch_knn(p, P_particular):
-        # p, P_particular = P_particular, p
         nbrs = NearestNeighbors(k + 1, algorithm = "ball_tree").fit(P_particular)
         indices = nbrs.kneighbors(p)[1]
         return indices[:,1:]
@@ -104,6 +110,20 @@ def knn_indices_func(ps, P, k):
         single_batch_knn(p, P[n]) for n, p in enumerate(ps)
     ], axis = 0)
     return torch.from_numpy(region_idx)
+
+def knn_indices_func_gpu(ps, P, k):
+
+    def single_batch_knn(p, P_particular):
+        nbrs_f = pytorch_knn_cuda.KNearestNeighbor(k + 1)
+        # knn_cuda(k + 1, )
+        indices = nbrs_f(P_particular, p)[0]
+        return indices[:,1:]
+
+    region_idx = torch.stack([
+        single_batch_knn(p, P[n]) for n, p in enumerate(ps)
+    ], dim = 0)
+    return region_idx
+
 
 if __name__ == "__main__":
     from torch.autograd import Variable
@@ -114,7 +134,7 @@ if __name__ == "__main__":
     test_P  = np.random.rand(N,num_points,D).astype(np.float32)
     idx = np.random.choice(test_P.shape[1], N_rep, replace = False)
     test_ps = test_P[:,idx,:]
-    test_P = Variable(torch.from_numpy(test_P))
-    test_ps = Variable(torch.from_numpy(test_ps))
-    out = knn_indices_func(test_ps, test_P, 5)
+    test_P = Variable(torch.from_numpy(test_P)).cuda()
+    test_ps = Variable(torch.from_numpy(test_ps)).cuda()
+    out = knn_indices_func_gpu(test_ps, test_P, 5)
     print(out)
