@@ -1,7 +1,4 @@
-import time
-
 import torch
-import torch.nn as nn
 
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
@@ -18,51 +15,6 @@ def endchannels(f, make_contiguous = False):
         else:
             return torch.transpose(f(torch.transpose(x, 1, -1)), -1, 1)
     return wrapped_func
-
-class BatchNorm(nn.Module):
-    """
-    PyTorch Linear layers transform shape in the form (N,*,in_features) ->
-    (N,*,out_features). BatchNorm normalizes over axis 1. Thus, BatchNorm
-    following a linear layer ONLY has the desired behavior if there are no
-    additional (*) dimensions. To get the desired behavior, we first transpose
-    the channel dim into the last dim, then tranpsose out.
-    """
-
-    def __init__(self, D, num_features, *args, **kwargs):
-        super(BatchNorm, self).__init__()
-        if D == 1:
-            self.bn = nn.BatchNorm1d(num_features, *args, **kwargs)
-        elif D == 2:
-            self.bn = nn.BatchNorm2d(num_features, *args, **kwargs)
-        elif D == 3:
-            self.bn = nn.BatchNorm3d(num_features, *args, **kwargs)
-        else:
-            raise ValueError("Dimensionality %i not supported" % D)
-
-        self.forward = endchannels(self.bn, make_contiguous = True)
-
-def MLP(layer_sizes, activation_layer = nn.ReLU(), batch_norm = True):
-    """
-    Creates a fully connected MLP of arbitrary depth.
-    :param layer_sizes: Sizes of MLP hidden layers.
-    :param activation_layer: Activation function to be applied in between layers.
-    :return: Multilayer perceptron module
-    """
-    if isinstance(layer_sizes, np.ndarray):
-        layer_sizes = layer_sizes.tolist()
-    if batch_norm:
-        return nn.Sequential(*[
-            nn.Sequential(nn.Linear(C_in, C_out),
-                          activation_layer,
-                          BatchNorm(D = 2, num_features = C_out, momentum = 0.9)
-            ) for (C_in, C_out) in zip(layer_sizes, layer_sizes[1:])
-        ])
-    else:
-        return nn.Sequential(*[
-            nn.Sequential(nn.Linear(C_in, C_out),
-                          activation_layer,
-            ) for (C_in, C_out) in zip(layer_sizes, layer_sizes[1:])
-        ])
 
 def apply_along_dim(xs, f, dim):
     """

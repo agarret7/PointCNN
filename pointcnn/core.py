@@ -7,10 +7,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from .util import knn_indices_func, MLP, BatchNorm, endchannels
+    from .util import knn_indices_func, endchannels
+    from .layers import MLP, BatchNorm, SeparableConv2d, DepthwiseConv2d
     from .context import timed
 except SystemError:
-    from util import knn_indices_func, MLP, BatchNorm, endchannels
+    from util import knn_indices_func, endchannels
+    from layers import MLP, BatchNorm, SeparableConv2d, DepthwiseConv2d
     from context import timed
 
 class XConv(nn.Module):
@@ -46,9 +48,9 @@ class XConv(nn.Module):
         # self.pts_batchnorm = BatchNorm(BatchNorm())
 
         # Main dense linear layers
-        self.mlp_lift = MLP(np.around(np.geomspace(D, self.C_lifted, num = mlp_width)).astype(int))
+        self.mlp_lift = MLP([D] + [self.C_lifted] * mlp_width)
         self.mid_conv = endchannels(nn.Conv2d(D, N_neighbors, 1).cuda())
-        self.mlp = MLP(np.around(np.geomspace(N_neighbors, N_neighbors)).astype(int))  # Somehow, original code has K x K.
+        self.mlp = MLP([N_neighbors] * mlp_width)  # Somehow, original code has K x K.
         self.end_conv = endchannels(nn.Conv2d(C_lifted + C_in, C_out, (N_neighbors, 1), groups = C_out).cuda())
 
         # Params for kernel initialization.
@@ -154,7 +156,7 @@ class PointCNN(nn.Module):
         """
         P_idx = self.r_indices_func(ps.cpu(), P.cpu(), N_neighbors).cuda()  # This step takes ~97% of the time.
         P_regional = self.select_region(P, P_idx)                           # Prime target for optimization: KNN on GPU.
-        if True:
+        if False:
             # Draw neighborhood points, for debugging.
             t = 23
             n = 3
@@ -165,6 +167,7 @@ class PointCNN(nn.Module):
             plt.scatter(neighborhood[:,0], neighborhood[:,1], s = 100, c = 'red')
             plt.show()
         F_regional = self.select_region(F, P_idx)
+        # ps, P, F_P -> ps_F
         return self.x_conv(ps, P_regional, F_regional)
 
 if __name__ == "__main__":
@@ -207,5 +210,6 @@ if __name__ == "__main__":
         test_F = Variable(torch.from_numpy(test_F)).cuda()
         test_ps = Variable(torch.from_numpy(test_ps)).cuda()
 
-        for _ in range(10):
-            out = model(test_ps, test_P, test_F)
+        print(test_F.size())
+        out = model(test_ps, test_P, test_F)
+        print(out.size())
