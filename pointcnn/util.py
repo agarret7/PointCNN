@@ -3,6 +3,8 @@ import torch
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
+torch.CUDA_LAUNCH_BLOCKING = 1
+
 try:
     from .context import pytorch_knn_cuda
 except SystemError:
@@ -67,7 +69,6 @@ def knn_indices_func_gpu(ps, P, k):
 
     def single_batch_knn(p, P_particular):
         nbrs_f = pytorch_knn_cuda.KNearestNeighbor(k + 1)
-        # knn_cuda(k + 1, )
         indices = nbrs_f(P_particular, p)[0]
         return indices[:,1:]
 
@@ -76,12 +77,11 @@ def knn_indices_func_gpu(ps, P, k):
     ], dim = 0)
     return region_idx
 
-
 if __name__ == "__main__":
     from torch.autograd import Variable
-    N_rep = 100
+    N_rep = 1000
     N = 2
-    num_points = 1000
+    num_points = 10000
     D = 3
     test_P  = np.random.rand(N,num_points,D).astype(np.float32)
     idx = np.random.choice(test_P.shape[1], N_rep, replace = False)

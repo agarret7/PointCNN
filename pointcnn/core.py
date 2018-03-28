@@ -140,7 +140,7 @@ class PointCNN(nn.Module):
         return regions
 
     # @timed.timed
-    def forward(self, ps, P, F):
+    def forward(self, ps, P, F, P_idx = None):
         """
         Given a set of representative points, a point cloud, and its
         corresponding features, return a new set of representative points with
@@ -154,7 +154,8 @@ class PointCNN(nn.Module):
         :param F: Regional features such that P[:,p_idx,:] is the feature associated with F[:,p_idx,:]
         :return:
         """
-        P_idx = self.r_indices_func(ps.cpu(), P.cpu(), N_neighbors).cuda()  # This step takes ~97% of the time.
+        if P_idx != None:
+            P_idx = self.r_indices_func(ps.cpu(), P.cpu(), N_neighbors).cuda()  # This step takes ~97% of the time.
         P_regional = self.select_region(P, P_idx)                           # Prime target for optimization: KNN on GPU.
         if False:
             # Draw neighborhood points, for debugging.
