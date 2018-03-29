@@ -51,14 +51,14 @@ class XConv(nn.Module):
         self.mlp_lift = MLP([D] + [self.C_lifted] * mlp_width)
         self.mid_conv = endchannels(nn.Conv2d(D, N_neighbors, 1).cuda())
         self.mlp = MLP([N_neighbors] * mlp_width)  # Somehow, original code has K x K.
-        self.end_conv = endchannels(nn.Conv2d(C_lifted + C_in, C_out, (N_neighbors, 1), groups = C_out).cuda())
+        self.end_conv = endchannels(nn.Conv2d(C_lifted + C_in, C_out, (N_neighbors, 1)).cuda())
 
         # Params for kernel initialization.
         self.K = nn.Parameter(torch.FloatTensor(C_out, C_in + self.C_lifted, N_neighbors))
         stdv = 1. / np.sqrt(N_neighbors)
         self.K.data.uniform_(-stdv, stdv)
 
-    def forward(self, p, P, F):
+    def forward(self, x):
         """
         Applies XConv to the input data.
         :type p: FloatTensor (N, N_rep, D)
@@ -70,22 +70,35 @@ class XConv(nn.Module):
         :param F: Regional features such that P[:,p_idx,:] is the feature associated with F[:,p_idx,:]
         :return: Features aggregated into point p.
         """
-        assert(p.size()[0] == P.size()[0] == F.size()[0])                # Check N is equal.
-        assert(p.size()[1] == P.size()[1] == F.size()[1] == self.N_rep)  # Check N_rep is equal.
-        assert(P.size()[2] == F.size()[2] == self.N_neighbors)           # Check N_neighbors is equal.
-        assert(p.size()[2] == P.size()[3] == self.D)                     # Check D is equal.
-        assert(F.size()[3] == self.C_in)                                 # Check C_in is equal.
+        p, P, F = x
+        assert(p.size()[0] == P.size()[0] == F.size()[0])       # Check N is equal.
+        assert(p.size()[1] == P.size()[1] == F.size()[1])       # Check N_rep is equal.
+        assert(P.size()[2] == F.size()[2] == self.N_neighbors)  # Check N_neighbors is equal.
+        assert(p.size()[2] == P.size()[3] == self.D)            # Check D is equal.
+        assert(F.size()[3] == self.C_in)                        # Check C_in is equal.
 
         N = len(P)
+        N_rep = p.size()[1]
         p_center = torch.unsqueeze(p, dim = 2)
-        P_local = self.pts_batchnorm(P - p_center)  # Move P to local coordinate system of p.
-        F_lifted = self.mlp_lift(P_local)           # Individually lift each point into C_lifted dim space.
-        F_cat = torch.cat((F_lifted, F), -1)        # Cat F_lifted and F, to size (N, N_rep, N_neighbors, C_lifted + C_in).
-        X_shape = (N, self.N_rep, N_neighbors, N_neighbors)
-        X = self.mlp(self.mid_conv(P_local))        # Learn the (N, K, K) X-transformation matrix.
+
+        # Move P to local coordinate system of p.
+        P_local = self.pts_batchnorm(P - p_center)
+
+        # Individually lift each point into C_lifted dim space.
+        F_lifted = self.mlp_lift(P_local)
+
+        # Cat F_lifted and F, to size (N, N_rep, N_neighbors, C_lifted + C_in).
+        F_cat = torch.cat((F_lifted, F), -1)
+
+        # Learn the (N, K, K) X-transformation matrix.
+        X_shape = (N, N_rep, self.N_neighbors, self.N_neighbors)
+        X = self.mlp(self.mid_conv(P_local))
         X = X.contiguous().view(*X_shape)
-        F_X = torch.matmul(X, F_cat)                # Weight and permute F_cat with the learned X.
+
+        # Weight and permute F_cat with the learned X.
+        F_X = torch.matmul(X, F_cat)
         F_p = self.end_conv(F_X)
+        time.sleep(5)
         return torch.squeeze(F_p, dim = 2)
 
 class PointCNN(nn.Module):
@@ -140,7 +153,7 @@ class PointCNN(nn.Module):
         return regions
 
     # @timed.timed
-    def forward(self, ps, P, F, P_idx = None):
+    def forward(self, x):
         """
         Given a set of representative points, a point cloud, and its
         corresponding features, return a new set of representative points with
@@ -154,8 +167,8 @@ class PointCNN(nn.Module):
         :param F: Regional features such that P[:,p_idx,:] is the feature associated with F[:,p_idx,:]
         :return:
         """
-        if P_idx != None:
-            P_idx = self.r_indices_func(ps.cpu(), P.cpu(), N_neighbors).cuda()  # This step takes ~97% of the time.
+        ps, P, F = x
+        P_idx = self.r_indices_func(ps.cpu(), P.cpu(), self.x_conv.N_neighbors).cuda()  # This step takes ~97% of the time.
         P_regional = self.select_region(P, P_idx)                           # Prime target for optimization: KNN on GPU.
         if False:
             # Draw neighborhood points, for debugging.
@@ -169,7 +182,7 @@ class PointCNN(nn.Module):
             plt.show()
         F_regional = self.select_region(F, P_idx)
         # ps, P, F_P -> ps_F
-        return self.x_conv(ps, P_regional, F_regional)
+        return self.x_conv((ps, P_regional, F_regional))
 
 if __name__ == "__main__":
     np.random.seed(0)
@@ -193,11 +206,11 @@ if __name__ == "__main__":
 
     elif TESTING == PointCNN:
         N = 4
-        num_points = 1000
-        N_rep = 50
-        D = 2
-        C_in = 128
-        C_out = 256
+        num_points = 4000
+        N_rep = 4000
+        D = 3
+        C_in = 768
+        C_out = 7
         N_neighbors = 5
 
         model = PointCNN(C_in, C_out, D, N_neighbors, N_rep, knn_indices_func).cuda()
@@ -212,5 +225,5 @@ if __name__ == "__main__":
         test_ps = Variable(torch.from_numpy(test_ps)).cuda()
 
         print(test_F.size())
-        out = model(test_ps, test_P, test_F)
+        out = model((test_ps, test_P, test_F))
         print(out.size())
