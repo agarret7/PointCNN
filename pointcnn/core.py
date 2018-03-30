@@ -7,12 +7,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from .util import knn_indices_func, endchannels
-    from .layers import MLP, BatchNorm, SeparableConv2d, DepthwiseConv2d
+    from .util import knn_indices_func
+    from .layers import MLP, LayerNorm, DepthwiseSeparableConv2d, endchannels
     from .context import timed
 except SystemError:
-    from util import knn_indices_func, endchannels
-    from layers import MLP, BatchNorm, SeparableConv2d, DepthwiseConv2d
+    from util import knn_indices_func
+    from layers import MLP, LayerNorm, DepthwiseSeparableConv2d, endchannels
     from context import timed
 
 class XConv(nn.Module):
@@ -44,20 +44,53 @@ class XConv(nn.Module):
         self.N_rep = N_rep
 
         # Additional processing layers
-        self.pts_batchnorm = BatchNorm(2, D, momentum = 0.9)
-        # self.pts_batchnorm = BatchNorm(BatchNorm())
+        # self.pts_layernorm = LayerNorm(2, momentum = 0.9)
 
         # Main dense linear layers
-        self.mlp_lift = MLP([D] + [self.C_lifted] * mlp_width)
-        self.mid_conv = endchannels(nn.Conv2d(D, N_neighbors, 1).cuda())
-        self.mlp = MLP([N_neighbors] * mlp_width)  # Somehow, original code has K x K.
-        self.end_conv = endchannels(nn.Conv2d(C_lifted + C_in, C_out, (N_neighbors, 1)).cuda())
+        self.mlp_lift = MLP([D] + [self.C_lifted] * (mlp_width - 1), batch_norm = False)
+        # self.mid_conv = endchannels(nn.Conv2d(D, N_neighbors, 1).cuda())
 
-        # Params for kernel initialization.
-        self.K = nn.Parameter(torch.FloatTensor(C_out, C_in + self.C_lifted, N_neighbors))
-        stdv = 1. / np.sqrt(N_neighbors)
-        self.K.data.uniform_(-stdv, stdv)
+        # Layers to generate X
+        self.mid_conv = endchannels(nn.Sequential(
+            nn.Conv2d(D, N_neighbors**2, (1, N_neighbors)).cuda(),
+            nn.ReLU(),
+            nn.BatchNorm2d(N_neighbors**2).cuda(),
+        ))
+        self.mid_dwconv1 = endchannels(nn.Sequential(
+            DepthwiseSeparableConv2d(
+                in_channels = N_neighbors,
+                out_channels = N_neighbors**2,
+                kernel_size = (1, N_neighbors),
+                depth_multiplier = N_neighbors
+            ).cuda(),
+            nn.ReLU(),
+            nn.BatchNorm2d(N_neighbors ** 2).cuda()
+        ))
+        self.mid_dwconv2 = endchannels(nn.Sequential(
+            DepthwiseSeparableConv2d(
+                in_channels = N_neighbors,
+                out_channels = N_neighbors**2,
+                kernel_size = (1, N_neighbors),
+                depth_multiplier = N_neighbors
+            ).cuda(),
+            nn.ReLU(),
+            nn.BatchNorm2d(N_neighbors**2).cuda()
+        ))
 
+        # Final 
+        self.mlp = MLP([N_neighbors] * mlp_width, batch_norm = False)
+        self.end_conv = endchannels(nn.Sequential(
+            DepthwiseSeparableConv2d(
+                in_channels = C_lifted + C_in,
+                out_channels = C_out,
+                kernel_size = (1, N_neighbors),
+                depth_multiplier = 4
+            ).cuda(),
+            nn.ReLU(),
+            nn.BatchNorm2d(C_out).cuda()
+        ))
+
+    # @timed.timed
     def forward(self, x):
         """
         Applies XConv to the input data.
@@ -82,7 +115,8 @@ class XConv(nn.Module):
         p_center = torch.unsqueeze(p, dim = 2)
 
         # Move P to local coordinate system of p.
-        P_local = self.pts_batchnorm(P - p_center)
+        P_local = P - p_center
+        # P_local = self.pts_layernorm(P - p_center)
 
         # Individually lift each point into C_lifted dim space.
         F_lifted = self.mlp_lift(P_local)
@@ -92,14 +126,17 @@ class XConv(nn.Module):
 
         # Learn the (N, K, K) X-transformation matrix.
         X_shape = (N, N_rep, self.N_neighbors, self.N_neighbors)
-        X = self.mlp(self.mid_conv(P_local))
+        X = self.mid_conv(P_local)
+        X = X.contiguous().view(*X_shape)
+        X = self.mid_dwconv1(X)
+        X = X.contiguous().view(*X_shape)
+        X = self.mid_dwconv2(X)
         X = X.contiguous().view(*X_shape)
 
         # Weight and permute F_cat with the learned X.
         F_X = torch.matmul(X, F_cat)
-        F_p = self.end_conv(F_X)
-        time.sleep(5)
-        return torch.squeeze(F_p, dim = 2)
+        F_p = self.end_conv(F_X).squeeze(dim = 2)
+        return F_p
 
 class PointCNN(nn.Module):
     """
@@ -152,7 +189,6 @@ class PointCNN(nn.Module):
         ], dim = 0)
         return regions
 
-    # @timed.timed
     def forward(self, x):
         """
         Given a set of representative points, a point cloud, and its
@@ -225,5 +261,6 @@ if __name__ == "__main__":
         test_ps = Variable(torch.from_numpy(test_ps)).cuda()
 
         print(test_F.size())
-        out = model((test_ps, test_P, test_F))
+        for _ in range(50):
+            out = model((test_ps, test_P, test_F))
         print(out.size())

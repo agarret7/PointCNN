@@ -10,14 +10,6 @@ try:
 except SystemError:
     from context import pytorch_knn_cuda
 
-def endchannels(f, make_contiguous = False):
-    def wrapped_func(x):
-        if make_contiguous:
-            return torch.transpose(f(torch.transpose(x, 1, -1).contiguous()), -1, 1)
-        else:
-            return torch.transpose(f(torch.transpose(x, 1, -1)), -1, 1)
-    return wrapped_func
-
 def apply_along_dim(xs, f, dim):
     """
     PyTorch analog to np.apply_along_axis.

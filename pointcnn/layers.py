@@ -3,50 +3,50 @@ import torch.nn as nn
 import numpy as np
 
 try:
-    from .util import endchannels
+    pass
+    # from .util import endchannels
 except:
-    from util import endchannels
+    # from util import endchannels
+    pass
 
-def SeparableConv2d(in_channels, out_channels, kernel_size):
+def endchannels(f, make_contiguous = False):
+    class wrapped_layer(nn.Module):
+        def __init__(self):
+            super(wrapped_layer, self).__init__()
+        def forward(self, x):
+            x = x.permute(0,3,1,2)
+            x = f(x)
+            x = x.permute(0,2,3,1)
+            return x
+    return wrapped_layer()
+
+def DepthwiseSeparableConv2d(in_channels, out_channels, kernel_size, depth_multiplier):
     """
-    Separable convolution (is this correct?)
+    Depthwise separable convolution
     """
     return nn.Sequential(
-        nn.Conv2d(in_channels, out_channels, kernel_size = (1, kernel_size)),
-        nn.Conv2d(out_channels, in_channels, kernel_size = (kernel_size, 1), groups = in_channels)
+        nn.Conv2d(in_channels, in_channels * depth_multiplier, kernel_size, groups = in_channels),
+        nn.Conv2d(in_channels * depth_multiplier, out_channels, 1)
     )
 
-def DepthwiseConv2d(in_channel, depth_multiplier):
+class LayerNorm(nn.Module):
     """
-    Factory function to generate depthwise 2d convolutional layer.
-    :param in_channel: TODO
-    :param out_channel: TODO
-    :param depth_multiplier: TODO
-    :return: TODO
-    """
-    return nn.Conv2d(in_channels, depth_multiplier * in_channels, groups = in_channels)
-
-class BatchNorm(nn.Module):
-    """
-    PyTorch Linear layers transform shape in the form (N,*,in_features) ->
-    (N,*,out_features). BatchNorm normalizes over axis 1. Thus, BatchNorm
-    following a linear layer ONLY has the desired behavior if there are no
-    additional (*) dimensions. To get the desired behavior, we first transpose
-    the channel dim into the last dim, then tranpsose out.
+    Batch Normalization over ONLY the mini-batch layer
+    (suitable for nn.Linear layers).
     """
 
-    def __init__(self, D, num_features, *args, **kwargs):
-        super(BatchNorm, self).__init__()
+    def __init__(self, N, D, *args, **kwargs):
+        super(LayerNorm, self).__init__()
         if D == 1:
-            self.bn = nn.BatchNorm1d(num_features, *args, **kwargs)
+            self.bn = nn.BatchNorm1d(N, *args, **kwargs)
         elif D == 2:
-            self.bn = nn.BatchNorm2d(num_features, *args, **kwargs)
+            self.bn = nn.BatchNorm2d(N, *args, **kwargs)
         elif D == 3:
-            self.bn = nn.BatchNorm3d(num_features, *args, **kwargs)
+            self.bn = nn.BatchNorm3d(N, *args, **kwargs)
         else:
             raise ValueError("Dimensionality %i not supported" % D)
 
-        self.forward = endchannels(self.bn, make_contiguous = True)
+        self.forward = lambda x: self.bn(x.unsqueeze(0)).squeeze(0)
 
 def MLP(layer_sizes, activation_layer = nn.ReLU(), batch_norm = True):
     """
@@ -61,7 +61,7 @@ def MLP(layer_sizes, activation_layer = nn.ReLU(), batch_norm = True):
         return nn.Sequential(*[
             nn.Sequential(nn.Linear(C_in, C_out),
                           activation_layer,
-                          BatchNorm(D = 2, num_features = C_out, momentum = 0.9)
+                          LayerNorm(D = 2, momentum = 0.9)
             ) for (C_in, C_out) in zip(layer_sizes, layer_sizes[1:])
         ])
     else:
