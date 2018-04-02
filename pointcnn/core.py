@@ -8,19 +8,20 @@ import matplotlib.pyplot as plt
 
 try:
     from .util import knn_indices_func
-    from .layers import MLP, LayerNorm, DepthwiseSeparableConv2d, endchannels
-    from .context import timed
+    from .layers import MLP, LayerNorm, Conv, SepConv, endchannels
+    # from .context import timed
 except SystemError:
     from util import knn_indices_func
-    from layers import MLP, LayerNorm, DepthwiseSeparableConv2d, endchannels
-    from context import timed
+    from layers import MLP, LayerNorm, Conv, SepConv, endchannels
+    # from context import timed
 
 class XConv(nn.Module):
     """
     Vectorized pointwise convolution.
     """
 
-    def __init__(self, C_in, C_out, D, N_neighbors, N_rep, C_lifted = None, mlp_width = 2):
+    def __init__(self, C_in, C_out, D, N_neighbors, N_rep, C_lifted = None,
+                 mlp_width = 2):
         """
         :param C_in: Input dimension of the points' features.
         :param C_out: Output dimension of the representative point features.
@@ -48,47 +49,30 @@ class XConv(nn.Module):
 
         # Main dense linear layers
         self.mlp_lift = MLP([D] + [self.C_lifted] * (mlp_width - 1), batch_norm = False)
-        # self.mid_conv = endchannels(nn.Conv2d(D, N_neighbors, 1).cuda())
 
         # Layers to generate X
-        self.mid_conv = endchannels(nn.Sequential(
-            nn.Conv2d(D, N_neighbors**2, (1, N_neighbors)).cuda(),
-            nn.ReLU(),
-            nn.BatchNorm2d(N_neighbors**2).cuda(),
-        ))
-        self.mid_dwconv1 = endchannels(nn.Sequential(
-            DepthwiseSeparableConv2d(
-                in_channels = N_neighbors,
-                out_channels = N_neighbors**2,
-                kernel_size = (1, N_neighbors),
-                depth_multiplier = N_neighbors
-            ).cuda(),
-            nn.ReLU(),
-            nn.BatchNorm2d(N_neighbors ** 2).cuda()
-        ))
-        self.mid_dwconv2 = endchannels(nn.Sequential(
-            DepthwiseSeparableConv2d(
-                in_channels = N_neighbors,
-                out_channels = N_neighbors**2,
-                kernel_size = (1, N_neighbors),
-                depth_multiplier = N_neighbors
-            ).cuda(),
-            nn.ReLU(),
-            nn.BatchNorm2d(N_neighbors**2).cuda()
-        ))
+        self.mid_conv = endchannels(Conv(D, N_neighbors**2, (1, N_neighbors))).cuda()
+        self.mid_dwconv1 = endchannels(SepConv(
+            in_channels = N_neighbors,
+            out_channels = N_neighbors**2,
+            kernel_size = (1, N_neighbors),
+            depth_multiplier = N_neighbors
+        )).cuda()
+        self.mid_dwconv2 = endchannels(SepConv(
+            in_channels = N_neighbors,
+            out_channels = N_neighbors**2,
+            kernel_size = (1, N_neighbors),
+            depth_multiplier = N_neighbors
+        )).cuda()
 
         # Final 
         self.mlp = MLP([N_neighbors] * mlp_width, batch_norm = False)
-        self.end_conv = endchannels(nn.Sequential(
-            DepthwiseSeparableConv2d(
-                in_channels = C_lifted + C_in,
-                out_channels = C_out,
-                kernel_size = (1, N_neighbors),
-                depth_multiplier = 4
-            ).cuda(),
-            nn.ReLU(),
-            nn.BatchNorm2d(C_out).cuda()
-        ))
+        self.end_conv = endchannels(SepConv(
+            in_channels = C_lifted + C_in,
+            out_channels = C_out,
+            kernel_size = (1, N_neighbors),
+            depth_multiplier = 4
+        )).cuda()
 
     # @timed.timed
     def forward(self, x):
@@ -136,6 +120,7 @@ class XConv(nn.Module):
         # Weight and permute F_cat with the learned X.
         F_X = torch.matmul(X, F_cat)
         F_p = self.end_conv(F_X).squeeze(dim = 2)
+        time.sleep(5)
         return F_p
 
 class PointCNN(nn.Module):
@@ -143,18 +128,22 @@ class PointCNN(nn.Module):
     TODO: Insert documentation
     """
 
-    def __init__(self, C_in, C_out, D, N_neighbors, N_rep, r_indices_func, C_lifted = None, mlp_width = 4):
+    def __init__(self, C_in, C_out, D, N_neighbors, dilution, N_rep,
+                 r_indices_func, C_lifted = None, mlp_width = 2):
         """
         :param C_in: Input dimension of the points' features.
         :param C_out: Output dimension of the representative point features.
         :param D: Spatial dimensionality of points.
         :param N_neighbors: Number of neighbors to convolve over.
+        :param N_rep: Number of representative points.
+        :param dilution: "Spread" of neighboring points.
         :param r_indices_func: Selector function of the type,
             INP
             ======
             ps : (N, N_rep, D) Representative points
             P  : (N, *, D) Point cloud
             N_neighbors : Number of points for each region.
+            dilution : "Spread" of neighboring points (analogous to stride).
 
             OUT
             ======
@@ -173,6 +162,7 @@ class PointCNN(nn.Module):
 
         self.r_indices_func = r_indices_func
         self.x_conv = XConv(C_in, C_out, D, N_neighbors, N_rep, C_lifted, mlp_width)
+        self.dilution = dilution
 
     def select_region(self, P, P_idx):
         """
@@ -204,12 +194,12 @@ class PointCNN(nn.Module):
         :return:
         """
         ps, P, F = x
-        P_idx = self.r_indices_func(ps.cpu(), P.cpu(), self.x_conv.N_neighbors).cuda()  # This step takes ~97% of the time.
-        P_regional = self.select_region(P, P_idx)                           # Prime target for optimization: KNN on GPU.
+        P_idx = self.r_indices_func(ps.cpu(), P.cpu(), self.x_conv.N_neighbors, self.dilution).cuda()  # This step takes ~97% of the time.
+        P_regional = self.select_region(P, P_idx)  # Prime target for optimization: KNN on GPU.
         if False:
             # Draw neighborhood points, for debugging.
-            t = 23
-            n = 3
+            t = 15
+            n = 0
             test_point = ps[n,t,:].cpu().data.numpy()
             neighborhood = P_regional[n,t,:,:].cpu().data.numpy()
             plt.scatter(P[n][:,0], P[n][:,1])
@@ -218,7 +208,27 @@ class PointCNN(nn.Module):
             plt.show()
         F_regional = self.select_region(F, P_idx)
         # ps, P, F_P -> ps_F
-        return self.x_conv((ps, P_regional, F_regional))
+        F_p = self.x_conv((ps, P_regional, F_regional))
+        return F_p
+
+class rPointCNN(nn.Module):
+    """ PointCNN with randomly sampled representative points. """
+
+    def __init__(self, *args, **kwargs):
+        super(rPointCNN, self).__init__()
+        self.pointcnn = PointCNN(*args, **kwargs)
+        self.N_rep = args[5]  # Exists because PointCNN requires it.
+
+    def forward(self, x):
+        P, F = x
+        if self.N_rep < P.size()[1]:
+            idx = np.random.choice(P.size()[1], self.N_rep, replace = False).tolist()
+            ps = P[:,idx,:]
+        else:
+            # All input points are representative points.
+            ps = P
+        ps_F = self.pointcnn((ps, P, F))
+        return ps, ps_F
 
 if __name__ == "__main__":
     np.random.seed(0)
@@ -242,14 +252,15 @@ if __name__ == "__main__":
 
     elif TESTING == PointCNN:
         N = 4
-        num_points = 4000
-        N_rep = 4000
+        num_points = 10000
+        N_rep = 5000
         D = 3
-        C_in = 768
-        C_out = 7
-        N_neighbors = 5
+        C_in = 128
+        C_out = 256
+        N_neighbors = 10
+        dilution = 2
 
-        model = PointCNN(C_in, C_out, D, N_neighbors, N_rep, knn_indices_func).cuda()
+        model = PointCNN(C_in, C_out, D, N_neighbors, dilution, N_rep, knn_indices_func).cuda()
 
         test_P  = np.random.rand(N,num_points,D).astype(np.float32)
         test_F  = np.random.rand(N,num_points,C_in).astype(np.float32)

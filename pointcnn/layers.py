@@ -13,21 +13,78 @@ def endchannels(f, make_contiguous = False):
     class wrapped_layer(nn.Module):
         def __init__(self):
             super(wrapped_layer, self).__init__()
+            self.f = f
         def forward(self, x):
             x = x.permute(0,3,1,2)
-            x = f(x)
+            x = self.f(x)
             x = x.permute(0,2,3,1)
             return x
     return wrapped_layer()
 
-def DepthwiseSeparableConv2d(in_channels, out_channels, kernel_size, depth_multiplier):
+class Dense(nn.Module):
+
+    def __init__(self, in_features, out_features, drop_rate = 0, with_bn = True,
+                 activation = nn.ReLU()):
+        super(Dense, self).__init__()
+
+        self.linear = nn.Linear(in_features, out_features)
+        self.activation = activation
+        # self.bn = LayerNorm(out_channels) if with_bn else None
+        if drop_rate > 0:
+            self.drop = nn.Dropout(drop_rate)
+
+    def forward(self, x):
+        x = self.linear(x)
+        if self.activation:
+            x = self.activation(x)
+        # if self.bn:
+        #     x = self.bn(x)
+        if self.drop:
+            x = self.drop(x)
+        return x
+
+class Conv(nn.Module):
+
+    def __init__(self, in_channels, out_channels, kernel_size, with_bn = True,
+                 activation = nn.ReLU()):
+        super(Conv, self).__init__()
+
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, bias = not with_bn)
+        self.activation = activation
+        self.bn = nn.BatchNorm2d(out_channels) if with_bn else None
+
+    def forward(self, x):
+        x = self.conv(x)
+        if self.activation:
+            x = self.activation(x)
+        if self.bn:
+            x = self.bn(x)
+        return x
+
+class SepConv(nn.Module):
     """
     Depthwise separable convolution
     """
-    return nn.Sequential(
-        nn.Conv2d(in_channels, in_channels * depth_multiplier, kernel_size, groups = in_channels),
-        nn.Conv2d(in_channels * depth_multiplier, out_channels, 1)
-    )
+
+    def __init__(self, in_channels, out_channels, kernel_size, depth_multiplier = 1,
+                 with_bn = True, activation = nn.ReLU()):
+        super(SepConv, self).__init__()
+
+        self.conv = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels * depth_multiplier, kernel_size, groups = in_channels),
+            nn.Conv2d(in_channels * depth_multiplier, out_channels, 1, bias = not with_bn)
+        )
+
+        self.activation = activation
+        self.bn = nn.BatchNorm2d(out_channels) if with_bn else None
+
+    def forward(self, x):
+        x = self.conv(x)
+        if self.activation:
+            x = self.activation(x)
+        if self.bn:
+            x = self.bn(x)
+        return x
 
 class LayerNorm(nn.Module):
     """

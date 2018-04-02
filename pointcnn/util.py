@@ -6,9 +6,11 @@ from sklearn.neighbors import NearestNeighbors
 torch.CUDA_LAUNCH_BLOCKING = 1
 
 try:
-    from .context import pytorch_knn_cuda
+    # from .context import pytorch_knn_cuda
+    pass
 except SystemError:
-    from context import pytorch_knn_cuda
+    # from context import pytorch_knn_cuda
+    pass
 
 def apply_along_dim(xs, f, dim):
     """
@@ -31,7 +33,7 @@ def zipwith_matmul(xs, ys):
     N = len(xs)
     return torch.stack([torch.mm(xs[i], ys[i]) for i in range(N)], dim = 0)
 
-def knn_indices_func(ps, P, k):
+def knn_indices_func(ps, P, k, d):
     """
     Indexing function based on K-Nearest Neighbors search.
     :type ps: FloatTensor (N, N_rep, D)
@@ -48,9 +50,9 @@ def knn_indices_func(ps, P, k):
     P = P.data.numpy()
 
     def single_batch_knn(p, P_particular):
-        nbrs = NearestNeighbors(k + 1, algorithm = "ball_tree").fit(P_particular)
+        nbrs = NearestNeighbors(d*k + 1, algorithm = "ball_tree").fit(P_particular)
         indices = nbrs.kneighbors(p)[1]
-        return indices[:,1:]
+        return indices[:,1::d]
 
     region_idx = np.stack([
         single_batch_knn(p, P[n]) for n, p in enumerate(ps)
