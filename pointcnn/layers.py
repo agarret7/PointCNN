@@ -30,8 +30,7 @@ class Dense(nn.Module):
         self.linear = nn.Linear(in_features, out_features)
         self.activation = activation
         # self.bn = LayerNorm(out_channels) if with_bn else None
-        if drop_rate > 0:
-            self.drop = nn.Dropout(drop_rate)
+        self.drop = nn.Dropout(drop_rate) if drop_rate > 0 else None
 
     def forward(self, x):
         x = self.linear(x)

@@ -1,9 +1,17 @@
+import sys, os
+
 import torch
 
 import numpy as np
 from sklearn.neighbors import NearestNeighbors
 
 torch.CUDA_LAUNCH_BLOCKING = 1
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__)) 
+
+sys.path.append(os.path.join(CURRENT_DIR, "..", "lib"))
+
+import pytorch_knn_cuda
 
 try:
     # from .context import pytorch_knn_cuda
@@ -59,12 +67,28 @@ def knn_indices_func(ps, P, k, d):
     ], axis = 0)
     return torch.from_numpy(region_idx)
 
-def knn_indices_func_gpu(ps, P, k):
+# def knn_indices_func_gpu(ps, P, k, d):
+# 
+#     def single_batch_knn(p, P_particular):
+#         nbrs_f = pytorch_knn_cuda.KNearestNeighbor(d*k + 1)
+#         indices = nbrs_f(P_particular, p)[0]
+#         return indices[:,1::d]
+# 
+#     region_idx = torch.stack([
+#         single_batch_knn(p, P[n]) for n, p in enumerate(ps)
+#     ], dim = 0)
+#     return region_idx
 
-    def single_batch_knn(p, P_particular):
-        nbrs_f = pytorch_knn_cuda.KNearestNeighbor(k + 1)
-        indices = nbrs_f(P_particular, p)[0]
-        return indices[:,1:]
+def knn_indices_func_gpu(ps, P, k, d):
+
+    def single_batch_knn(qry, ref):
+        n, d = ref.size()
+        m, d = qry.size()
+        mref = ref.expand(m, n, d)
+        mqry = qry.expand(n, m, d).transpose(0, 1)
+        dist2 = torch.sum((mqry - mref)**2, 2).squeeze()
+        _, inds = torch.topk(dist2, k*d + 1, dim = 1, largest = False)
+        return inds[:,1::d]
 
     region_idx = torch.stack([
         single_batch_knn(p, P[n]) for n, p in enumerate(ps)
@@ -82,5 +106,6 @@ if __name__ == "__main__":
     test_ps = test_P[:,idx,:]
     test_P = Variable(torch.from_numpy(test_P)).cuda()
     test_ps = Variable(torch.from_numpy(test_ps)).cuda()
-    out = knn_indices_func_gpu(test_ps, test_P, 5)
+    out = knn_indices_func_gpu(test_ps, test_P, 5, 3)
+
     print(out)

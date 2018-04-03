@@ -2,14 +2,15 @@ import math
 import data_utils
 import time
 
+import numpy as np
 import torch
 from torch import nn
 from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
 
 from pointcnn.core import rPointCNN
-from pointcnn.util import knn_indices_func
-from pointcnn.layers import MLP
+from pointcnn.util import knn_indices_func_gpu
+from pointcnn.layers import Dense
 
 x = 2
 
@@ -36,7 +37,7 @@ class mnist_dataset(Dataset):
 
 # C_in, C_out, D, N_neighbors, dilution, N_rep, r_indices_func, C_lifted = None, mlp_width = 2
 # (a, b, c, d, e) == (C_in, C_out, N_neighbors, dilution, N_rep)
-paPointCNN = lambda a,b,c,d,e: rPointCNN(a, b, 3, c, d, e, knn_indices_func)
+paPointCNN = lambda a,b,c,d,e: rPointCNN(a, b, 3, c, d, e, knn_indices_func_gpu)
 
 class Classifier(nn.Module):
     
@@ -52,13 +53,9 @@ class Classifier(nn.Module):
         )
 
         self.fcn = nn.Sequential(
-            nn.Linear(160, 128),
-            nn.ReLU(),
-            nn.Dropout(0.0),
-            nn.Linear(128,  64),  # throw in some batch normalization
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(64, 10),  # 10 digits
+            Dense(160, 128),
+            Dense(128,  64, drop_rate = 0.5),
+            Dense(64, 10, activation = None)
         )
 
         self.log_softmax = nn.LogSoftmax()
@@ -66,9 +63,10 @@ class Classifier(nn.Module):
     def forward(self, x):
         x = self.pcnn(x)[1]  # grab features
         logits = self.fcn(x)
-        logits = torch.mean(logits, dim = 1)
-        log_probs = self.log_softmax(logits)
-        return log_probs
+        # logits = torch.mean(logits, dim = 1)
+        return logits
+        # log_probs = self.log_softmax(logits)
+        # return log_probs
 
 model = Classifier().cuda()
 
@@ -94,14 +92,22 @@ point_num = data_train.shape[1]
 batch_num_per_epoch = int(math.ceil(num_train / batch_size))
 batch_num = batch_num_per_epoch * num_epochs
 
-dataset = mnist_dataset(data_train, label_train)
-loader = DataLoader(dataset, batch_size = batch_size)
+training_set = mnist_dataset(data_train, label_train)
+training_loader = DataLoader(training_set, batch_size = batch_size)
 
-optimizer = torch.optim.SGD(model.parameters(), lr = 0.1, momentum = 0.9)
+testing_set = mnist_dataset(data_val, label_val)
+testing_loader = DataLoader(testing_set, batch_size = 1)
+
+optimizer = torch.optim.SGD(model.parameters(), lr = 0.01, momentum = 0.9)
 loss_fn = nn.NLLLoss()
 
 for _ in range(num_epochs):
-    for data, label in loader:
+
+    n = 0
+
+    for data, label in training_loader:
+
+        n += 1
 
         data = Variable(data).cuda()
         label = Variable(label.long()).cuda()
@@ -113,8 +119,34 @@ for _ in range(num_epochs):
         t0 = time.time()
         out = model((P, F))
 
+        print(out)
+
         loss = loss_fn(out, label)
         loss.backward()
         optimizer.step()
         
-        # print(loss.data[0])
+        print("loss:", loss.data[0])
+
+        if n % 25 == 0:
+            # Testing accuracy
+            num_testing = 0
+            total = 0
+            correct = 0
+            for data, label in testing_loader:
+                if num_testing > 100:
+                    break
+                else:
+                    num_testing += 1
+                data = Variable(data).cuda()
+                label = Variable(label.long()).cuda()
+                P = data[:,:,:3]
+                F = data[:,:,3:]
+                out = model((P, F))
+                probs = nn.Softmax()(out)
+                # print(probs)
+                _, pred = probs.max(1)
+                total += 1
+                if pred.cpu().data[0] == label.cpu().data[0]:
+                    correct += 1
+            accuracy = correct / total
+            print("accuracy:", accuracy)

@@ -7,11 +7,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from .util import knn_indices_func
+    from .util import knn_indices_func, knn_indices_func_gpu
     from .layers import MLP, LayerNorm, Conv, SepConv, endchannels
     # from .context import timed
 except SystemError:
-    from util import knn_indices_func
+    from util import knn_indices_func, knn_indices_func_gpu
     from layers import MLP, LayerNorm, Conv, SepConv, endchannels
     # from context import timed
 
@@ -120,7 +120,6 @@ class XConv(nn.Module):
         # Weight and permute F_cat with the learned X.
         F_X = torch.matmul(X, F_cat)
         F_p = self.end_conv(F_X).squeeze(dim = 2)
-        time.sleep(5)
         return F_p
 
 class PointCNN(nn.Module):
@@ -194,11 +193,11 @@ class PointCNN(nn.Module):
         :return:
         """
         ps, P, F = x
-        P_idx = self.r_indices_func(ps.cpu(), P.cpu(), self.x_conv.N_neighbors, self.dilution).cuda()  # This step takes ~97% of the time.
+        P_idx = self.r_indices_func(ps, P, self.x_conv.N_neighbors, self.dilution)  # This step takes ~97% of the time.
         P_regional = self.select_region(P, P_idx)  # Prime target for optimization: KNN on GPU.
         if False:
             # Draw neighborhood points, for debugging.
-            t = 15
+            t = 10
             n = 0
             test_point = ps[n,t,:].cpu().data.numpy()
             neighborhood = P_regional[n,t,:,:].cpu().data.numpy()
@@ -233,45 +232,27 @@ class rPointCNN(nn.Module):
 if __name__ == "__main__":
     np.random.seed(0)
 
-    TESTING = PointCNN
+    N = 1
+    num_points = 500
+    N_rep = 20
+    D = 2
+    C_in = 16
+    C_out = 32
+    N_neighbors = 30
+    dilution = 1
 
-    if TESTING == XConv:
-        N = 4
-        N_rep = 150
-        D = 3
-        C_in = 8
-        C_out = 32
-        N_neighbors = 10
+    model = PointCNN(C_in, C_out, D, N_neighbors, dilution, N_rep, knn_indices_func_gpu).cuda()
 
-        model = XConv(C_in, C_out, D, N_neighbors, N_rep)
-        p = Variable(torch.from_numpy(np.random.rand(N,N_rep,D).astype(np.float32)))
-        P = Variable(torch.from_numpy(np.random.rand(N,N_rep,N_neighbors,D).astype(np.float32)))
-        F = Variable(torch.from_numpy(np.random.rand(N,N_rep,N_neighbors,C_in).astype(np.float32)))
+    test_P  = np.random.rand(N,num_points,D).astype(np.float32)
+    test_F  = np.random.rand(N,num_points,C_in).astype(np.float32)
+    idx = np.random.choice(test_P.shape[1], N_rep, replace = False)
+    test_ps = test_P[:,idx,:]
 
-        out = model(p, P, F)
+    test_P = Variable(torch.from_numpy(test_P)).cuda()
+    test_F = Variable(torch.from_numpy(test_F)).cuda()
+    test_ps = Variable(torch.from_numpy(test_ps)).cuda()
 
-    elif TESTING == PointCNN:
-        N = 4
-        num_points = 10000
-        N_rep = 5000
-        D = 3
-        C_in = 128
-        C_out = 256
-        N_neighbors = 10
-        dilution = 2
-
-        model = PointCNN(C_in, C_out, D, N_neighbors, dilution, N_rep, knn_indices_func).cuda()
-
-        test_P  = np.random.rand(N,num_points,D).astype(np.float32)
-        test_F  = np.random.rand(N,num_points,C_in).astype(np.float32)
-        idx = np.random.choice(test_P.shape[1], N_rep, replace = False)
-        test_ps = test_P[:,idx,:]
-
-        test_P = Variable(torch.from_numpy(test_P)).cuda()
-        test_F = Variable(torch.from_numpy(test_F)).cuda()
-        test_ps = Variable(torch.from_numpy(test_ps)).cuda()
-
-        print(test_F.size())
-        for _ in range(50):
-            out = model((test_ps, test_P, test_F))
-        print(out.size())
+    print(test_F.size())
+    for _ in range(1):
+        out = model((test_ps, test_P, test_F))
+    print(out.size())
