@@ -250,7 +250,6 @@ for e in range(1, num_epochs + 1):
                 out = model((P_sampled, F_sampled))
                 probs = nn.Softmax()(out)
                 _, pred = probs.max(1)
-                print(pred)
                 accuracy_sum += torch.mean((pred.data.cpu() == label.long()).float())
             accuracy = accuracy_sum / testing_size
             print("accuracy:", accuracy)

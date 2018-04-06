@@ -95,6 +95,13 @@ def knn_indices_func_gpu(ps, P, k, d):
     ], dim = 0)
     return region_idx
 
+def plot(pts, fts):
+    num_F = fts.size()[2]
+    pts = pts[0].data.cpu().numpy()
+    plt.scatter(pts[:,0], pts[:,1], s = num_F, c = "k")
+    plt.savefig("./%i.png" % num_F)
+    plt.cla()
+
 if __name__ == "__main__":
     from torch.autograd import Variable
     N_rep = 1000

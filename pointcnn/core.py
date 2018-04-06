@@ -1,18 +1,34 @@
+"""
+PyTorch implementation of the PointCNN paper, as specified in:
+  https://arxiv.org/pdf/1801.07791.pdf
+
+Author: Austin J. Garrett
+
+I make liberal use of the mypy static type checker for Python.
+It should be mostly intuitive, but further documentation can be found at:
+  http://mypy-lang.org/
+"""
+
+# Standard Modules
 import time
 
+# External Modules
 import torch
 import torch.nn as nn
+from torch import Tensor, LongTensor
 from torch.autograd import Variable
 import numpy as np
 import matplotlib.pyplot as plt
+from typing import Tuple, Callable
 
+# Internal Modules
 try:
-    from .util import knn_indices_func, knn_indices_func_gpu
-    from .layers import MLP, LayerNorm, Conv, SepConv, Dense, endchannels
+    from .util import knn_indices_func, knn_indices_func_gpu, plot
+    from .layers import MLP, LayerNorm, Conv, SepConv, Dense, end_channels
     # from .context import timed
 except SystemError:
-    from util import knn_indices_func, knn_indices_func_gpu
-    from layers import MLP, LayerNorm, Conv, SepConv, Dense, endchannels
+    from util import knn_indices_func, knn_indices_func_gpu, plot
+    from layers import MLP, LayerNorm, Conv, SepConv, Dense, end_channels
     # from context import timed
 
 class XConv(nn.Module):
@@ -20,120 +36,106 @@ class XConv(nn.Module):
     Vectorized pointwise convolution.
     """
 
-    def __init__(self, C_in, C_out, D, N_neighbors, N_rep, C_lifted, depth_multiplier):
+    def __init__(self, C_in : int, C_out : int, dims : int, K : int,
+                 P : int, C_mid : int, depth_multiplier : int) -> None:
         """
         :param C_in: Input dimension of the points' features.
         :param C_out: Output dimension of the representative point features.
-        :param D: Spatial dimensionality of points.
-        :param N_neighbors: Number of neighbors to convolve over.
-        :param C_lifted: Dimensionality of lifted point features.
-        :param mlp_width: Number of hidden layers in MLPs.
+        :param dims: Spatial dimensionality of points.
+        :param K: Number of neighbors to convolve over.
+        :param P: Number of representative points
+        :param C_mid: Dimensionality of lifted point features.
+        :param depth_multiplier: Depth multiplier for internal depthwise separable convolution.
         """
         super(XConv, self).__init__()
 
         if __debug__:
             # Only needed for assertions.
             self.C_in = C_in
-            self.C_lifted = C_lifted
-            self.D = D
-            self.N_neighbors = N_neighbors
+            self.C_mid = C_mid
+            self.dims = dims
+            self.K = K
 
-        self.N_rep = N_rep
+        self.P = P
 
         # Additional processing layers
         # self.pts_layernorm = LayerNorm(2, momentum = 0.9)
 
         # Main dense linear layers
-        self.dense1 = Dense(D, C_lifted)
-        self.dense2 = Dense(C_lifted, C_lifted)
+        self.dense1 = Dense(dims, C_mid)
+        self.dense2 = Dense(C_mid, C_mid)
 
         # Layers to generate X
         self.x_trans = nn.Sequential(
-            endchannels(Conv(
-                in_channels = D,
-                out_channels = N_neighbors**2,
-                kernel_size = (1, N_neighbors),
+            end_channels(Conv(
+                in_channels = dims,
+                out_channels = K*K,
+                kernel_size = (1, K),
                 with_bn = False
             )),
-            Dense(N_neighbors**2, N_neighbors**2, with_bn = False),
-            Dense(N_neighbors**2, N_neighbors**2, with_bn = False, activation = None)
+            Dense(K*K, K*K, with_bn = False),
+            Dense(K*K, K*K, with_bn = False, activation = None)
         )
 
-        """
-        self.mid_conv = endchannels(Conv(D, N_neighbors**2, (1, N_neighbors))).cuda()
-        self.mid_dwconv1 = endchannels(SepConv(
-            in_channels = N_neighbors,
-            out_channels = N_neighbors**2,
-            kernel_size = (1, N_neighbors),
-            depth_multiplier = N_neighbors
-        )).cuda()
-        self.mid_dwconv2 = endchannels(SepConv(
-            in_channels = N_neighbors,
-            out_channels = N_neighbors**2,
-            kernel_size = (1, N_neighbors),
-            depth_multiplier = N_neighbors
-        )).cuda()
-        """
-
-        print(depth_multiplier)
-        # Final 
-        self.end_conv = endchannels(SepConv(
-            in_channels = C_lifted + C_in,
+        self.end_conv = end_channels(SepConv(
+            in_channels = C_mid + C_in,
             out_channels = C_out,
-            kernel_size = (1, N_neighbors),
+            kernel_size = (1, K),
             depth_multiplier = depth_multiplier
         )).cuda()
 
-    # @timed.timed
-    def forward(self, x):
+    def forward(self, x : Tuple[Tensor, Tensor, Tensor]) -> Tensor:
         """
         Applies XConv to the input data.
-        :type p: FloatTensor (N, N_rep, D)
-        :type P: FloatTensor (N, N_rep, N_neighbors, D)
-        :type F: FloatTensor (N, N_rep, N_neighbors, C_in)
-        :rtype:  FloatTensor (TODO: shape)
-        :param p: Representative point
-        :param P: Regional point cloud such that F[:,p_idx,:] is the feature associated with P[:,p_idx,:]
-        :param F: Regional features such that P[:,p_idx,:] is the feature associated with F[:,p_idx,:]
-        :return: Features aggregated into point p.
+        :type rep_pt: (N, P, dims)
+        :type pts: (N, P, K, dims)
+        :type fts: (N, P, K, C_in)
+        :rtype: (TODO: shape)
+        :param x: (rep_pt, pts, fts)
+        :param rep_pt: Representative point
+        :param pts: Regional point cloud such that fts[:,p_idx,:] is the feature associated with pts[:,p_idx,:]
+        :param fts: Regional features such that pts[:,p_idx,:] is the feature associated with fts[:,p_idx,:]
+        :return: Features aggregated into point rep_pt.
         """
-        p, P, F = x
-        if F is not None:
-            assert(p.size()[0] == P.size()[0] == F.size()[0])       # Check N is equal.
-            assert(p.size()[1] == P.size()[1] == F.size()[1])       # Check N_rep is equal.
-            assert(P.size()[2] == F.size()[2] == self.N_neighbors)  # Check N_neighbors is equal.
-            assert(F.size()[3] == self.C_in)                        # Check C_in is equal.
+        rep_pt, pts, fts = x
+        N = len(pts)
+
+        #== RUNTIME ASSERTIONS ==#
+        if fts is not None:
+            assert(rep_pt.size()[0] == pts.size()[0] == fts.size()[0])  # Check N is equal.
+            assert(rep_pt.size()[1] == pts.size()[1] == fts.size()[1])  # Check P is equal.
+            assert(pts.size()[2] == fts.size()[2] == self.K)            # Check K is equal.
+            assert(fts.size()[3] == self.C_in)                          # Check C_in is equal.
         else:
-            assert(p.size()[0] == P.size()[0])                      # Check N is equal.
-            assert(p.size()[1] == P.size()[1])                      # Check N_rep is equal.
-            assert(P.size()[2] == self.N_neighbors)                 # Check N_neighbors is equal.
-        assert(p.size()[2] == P.size()[3] == self.D)                # Check D is equal.
+            assert(rep_pt.size()[0] == pts.size()[0])                   # Check N is equal.
+            assert(rep_pt.size()[1] == pts.size()[1])                   # Check P is equal.
+            assert(pts.size()[2] == self.K)                             # Check K is equal.
+        assert(rep_pt.size()[2] == pts.size()[3] == self.dims)          # Check dims is equal.
+        #========================#
 
-        N = len(P)
-        N_rep = p.size()[1]
-        p_center = torch.unsqueeze(p, dim = 2)
+        P = rep_pt.size()[1]  # (N, P, K, dims)
+        p_center = torch.unsqueeze(rep_pt, dim = 2)  # (N, P, 1, dims)
 
-        # Move P to local coordinate system of p.
-        P_local = P - p_center
-        # P_local = self.pts_layernorm(P - p_center)
+        # Move pts to local coordinate system of rep_pt.
+        pts_local = pts - p_center  # (N, P, K, dims)
+        # pts_local = self.pts_layernorm(pts - p_center)
+    
+        # Individually lift each point into C_mid space.
+        fts_lifted0 = self.dense1(pts_local)
+        fts_lifted  = self.dense2(fts_lifted0)  # (N, P, K, C_mid)
 
-        # Individually lift each point into C_lifted dim space.
-        F_lifted0 = self.dense1(P_local)
-        F_lifted  = self.dense2(F_lifted0)
-
-        # Cat F_lifted and F,None to size (N, N_rep, N_neighbors, C_lifted + C_in).
-        if F is None:
-            F_cat = F_lifted
+        if fts is None:
+            fts_cat = fts_lifted
         else:
-            F_cat = torch.cat((F_lifted, F), -1)
+            fts_cat = torch.cat((fts_lifted, fts), -1)  # (N, P, K, C_mid + C_in)
 
         # Learn the (N, K, K) X-transformation matrix.
-        X_shape = (N, N_rep, self.N_neighbors, self.N_neighbors)
-        X = self.x_trans(P_local)
+        X_shape = (N, P, self.K, self.K)
+        X = self.x_trans(pts_local)
         X = X.view(*X_shape)
 
         """
-        X = self.mid_conv(P_local)
+        X = self.mid_conv(pts_local)
         X = X.contiguous().view(*X_shape)
         X = self.mid_dwconv1(X)
         X = X.contiguous().view(*X_shape)
@@ -141,162 +143,159 @@ class XConv(nn.Module):
         X = X.contiguous().view(*X_shape)
         """
 
-        # Weight and permute F_cat with the learned X.
-        F_X = torch.matmul(X, F_cat)
-        F_p = self.end_conv(F_X).squeeze(dim = 2)
-        return F_p
+        # Weight and permute fts_cat with the learned X.
+        fts_X = torch.matmul(X, fts_cat)
+        fts_p = self.end_conv(fts_X).squeeze(dim = 2)
+        return fts_p
 
 class PointCNN(nn.Module):
     """
     TODO: Insert documentation
     """
 
-    def __init__(self, C_in, C_out, D, N_neighbors, dilution, N_rep, r_indices_func):
+    def __init__(self, C_in : int, C_out : int, dims : int, K : int, D : int, P : int,
+                 r_indices_func : Callable[[Tensor, Tensor, int, int], LongTensor]) -> None:
         """
         :param C_in: Input dimension of the points' features.
         :param C_out: Output dimension of the representative point features.
-        :param D: Spatial dimensionality of points.
-        :param N_neighbors: Number of neighbors to convolve over.
-        :param N_rep: Number of representative points.
-        :param dilution: "Spread" of neighboring points.
+        :param dims: Spatial dimensionality of points.
+        :param K: Number of neighbors to convolve over.
+        :param P: Number of representative points.
+        :param D: "Spread" of neighboring points.
         :param r_indices_func: Selector function of the type,
             INP
             ======
-            ps : (N, N_rep, D) Representative points
-            P  : (N, *, D) Point cloud
-            N_neighbors : Number of points for each region.
-            dilution : "Spread" of neighboring points (analogous to stride).
+            rep_pts : (N, P, dims) Representative points
+            pts  : (N, *, dims) Point cloud
+            K : Number of points for each region.
+            D : "Spread" of neighboring points (analogous to stride).
 
             OUT
             ======
-            P_idx : (N, N_rep, N_neighbors) Array of indices into P such that
-            P[P_idx] is the set of points in the "region" around p.
+            pts_idx : (N, P, K) Array of indices into pts such that
+            pts[pts_idx] is the set of points in the "region" around rep_pt.
 
-        a representative point p and a point cloud P. From these it returns an
-        array of N_neighbors
-        :param C_lifted: Dimensionality of lifted point features.
+        a representative point rep_pt and a point cloud pts. From these it returns an
+        array of K
+        :param C_mid: Dimensionality of lifted point features.
         :param mlp_width: Number of hidden layers in MLPs.
         """
         super(PointCNN, self).__init__()
 
-        C_lifted = C_out // 2 if C_in == 0 else C_out // 4
+        C_mid = C_out // 2 if C_in == 0 else C_out // 4
         depth_multiplier = min(int(np.ceil(C_out / C_in)), 4)
 
         self.r_indices_func = r_indices_func
         self.dense = Dense(C_in, C_out // 2) if C_in != 0 else None
-        self.x_conv = XConv(C_out // 2 if C_in != 0 else C_in, C_out, D, N_neighbors, N_rep, C_lifted, depth_multiplier)
-        self.dilution = dilution
+        self.x_conv = XConv(C_out // 2 if C_in != 0 else C_in, C_out, dims, K, P, C_mid, depth_multiplier)
+        self.D = D
 
-    def select_region(self, P, P_idx):
+    def select_region(self, pts : Tensor, pts_idx : LongTensor) -> Tensor:
         """
         Selects
-        :type P: FloatTensor (N, *, D)
-        :type P_idx: FloatTensor (N, N_rep, N_neighbors)
-        :rtype P_region: FloatTensor (N_rep, N_neighbors, D)
-        :param P: Point cloud to select regional points from
-        :param P_idx: Indices of points in region to be selected
+        :type pts: (N, *, dims)
+        :type pts_idx: (N, P, K)
+        :rtype pts_region: (P, K, dims)
+        :param pts: Point cloud to select regional points from
+        :param pts_idx: Indices of points in region to be selected
         :return:
         """
         regions = torch.stack([
-            P[n][idx,:] for n, idx in enumerate(torch.unbind(P_idx, dim = 0))
+            pts[n][idx,:] for n, idx in enumerate(torch.unbind(pts_idx, dim = 0))
         ], dim = 0)
         return regions
 
-    def forward(self, x):
+    def forward(self, x : Tuple[Tensor, Tensor, Tensor]) -> Tensor:
         """
         Given a set of representative points, a point cloud, and its
         corresponding features, return a new set of representative points with
         features projected from the point cloud.
-        :type ps: FloatTensor (N, *, D)
-        :type P: FloatTensor (N, N_neighbors, D)
-        :type F: FloatTensor (N, N_neighbors, C_in)
-        :rtype:  FloatTensor (N, N_rep, D)
-        :param ps: Representative points
-        :param P: Regional point cloud such that F[:,p_idx,:] is the feature associated with P[:,p_idx,:]
-        :param F: Regional features such that P[:,p_idx,:] is the feature associated with F[:,p_idx,:]
+        :type rep_pts: (N, *, dims)
+        :type pts: (N, K, dims)
+        :type fts: (N, K, C_in)
+        :rtype: (N, P, dims)
+        :param rep_pts: Representative points
+        :param pts: Regional point cloud such that fts[:,p_idx,:] is the feature associated with pts[:,p_idx,:]
+        :param fts: Regional features such that pts[:,p_idx,:] is the feature associated with fts[:,p_idx,:]
         :return:
         """
-        ps, P, F = x
-        t0 = time.time()
-        F = self.dense(F) if F is not None else F
-        P_idx = self.r_indices_func(ps, P, self.x_conv.N_neighbors, self.dilution)  # This step takes ~97% of the time.
-        P_regional = self.select_region(P, P_idx)  # Prime target for optimization: KNN on GPU.
+        rep_pts, pts, fts = x
+        fts = self.dense(fts) if fts is not None else fts
+
+        # This step takes ~97% of the time. Prime target for optimization: KNN on GPU.
+        pts_idx = self.r_indices_func(rep_pts.cpu(), pts.cpu(), self.x_conv.K, self.D).cuda()
+        # -------------------------------------------------------------------------- #
+
+        pts_regional = self.select_region(pts, pts_idx)
+        fts_regional = self.select_region(fts, pts_idx) if fts is not None else fts
+        fts_p = self.x_conv((rep_pts, pts_regional, fts_regional))
+
         if False:
             # Draw neighborhood points, for debugging.
             t = 10
             n = 0
-            test_point = ps[n,t,:].cpu().data.numpy()
-            neighborhood = P_regional[n,t,:,:].cpu().data.numpy()
-            plt.scatter(P[n][:,0], P[n][:,1])
+            test_point = rep_pts[n,t,:].cpu().data.numpy()
+            neighborhood = pts_regional[n,t,:,:].cpu().data.numpy()
+            plt.scatter(pts[n][:,0], pts[n][:,1])
             plt.scatter(test_point[0], test_point[1], s = 100, c = 'green')
             plt.scatter(neighborhood[:,0], neighborhood[:,1], s = 100, c = 'red')
             plt.show()
-        t1 = time.time()
-        F_regional = self.select_region(F, P_idx) if F is not None else F
-        test_time = time.time() - t1
-        F_p = self.x_conv((ps, P_regional, F_regional))
-        total_time = time.time() - t0
-        # print("frac of time:", test_time / total_time)
-        return F_p
+        return fts_p
 
-class rPointCNN(nn.Module):
-    """ PointCNN with randomly sampled representative points. """
+class RandPointCNN(nn.Module):
+    """ PointCNN with randomly subsampled representative points. """
 
     def __init__(self, *args, **kwargs):
-        super(rPointCNN, self).__init__()
+        super(RandPointCNN, self).__init__()
         self.pointcnn = PointCNN(*args, **kwargs)
-        self.N_rep = args[5]  # Exists because PointCNN requires it.
 
-    def forward(self, x):
-        P, F = x
-        if 0 < self.N_rep < P.size()[1]:
-            idx = np.random.choice(P.size()[1], self.N_rep, replace = False).tolist()
-            ps = P[:,idx,:]
+        # This is safe because PointCNN requires P.
+        self.P = args[5] if len(args) > 5 else kwargs['P']
+
+    def forward(self, x :Tuple[Tensor, Tensor]) -> Tuple[Tensor, Tensor]:
+        pts, fts = x
+        if 0 < self.P < pts.size()[1]:
+            # Select random set of indices of subsampled points.
+            idx = np.random.choice(pts.size()[1], self.P, replace = False).tolist()
+            rep_pts = pts[:,idx,:]
         else:
             # All input points are representative points.
-            ps = P
-        ps_F = self.pointcnn((ps, P, F))
-        return ps, ps_F
-
-def plot(P, F):
-    num_F = F.size()[2]
-    pts = P[0].data.cpu().numpy()
-    plt.scatter(pts[:,0], pts[:,1], s = num_F, c = "k")
-    plt.savefig("./%i.png" % num_F)
-    plt.cla()
+            rep_pts = pts
+        rep_pts_fts = self.pointcnn((rep_pts, pts, fts))
+        return rep_pts, rep_pts_fts
 
 if __name__ == "__main__":
     np.random.seed(0)
 
     N = 1
     num_points = 1000
-    D = 2
+    dims = 2
     C_in = 4
-    N_neighbors = 10
-    dilution = 1
+    K = 10
+    D = 1
 
-    layer1 = rPointCNN(C_in,   8, D, N_neighbors, dilution, 1000, knn_indices_func).cuda()
-    layer2 = rPointCNN(   8,  16, D, N_neighbors, dilution,  500, knn_indices_func).cuda()
-    layer3 = rPointCNN(  16,  32, D, N_neighbors, dilution,  250, knn_indices_func).cuda()
-    layer4 = rPointCNN(  32,  64, D, N_neighbors, dilution,  125, knn_indices_func).cuda()
-    layer5 = rPointCNN(  64, 128, D, N_neighbors, dilution,   50, knn_indices_func).cuda()
+    layer1 = RandPointCNN(C_in,   8, dims, K, D, 1000, knn_indices_func).cuda()
+    layer2 = RandPointCNN(   8,  16, dims, K, D,  500, knn_indices_func).cuda()
+    layer3 = RandPointCNN(  16,  32, dims, K, D,  250, knn_indices_func).cuda()
+    layer4 = RandPointCNN(  32,  64, dims, K, D,  125, knn_indices_func).cuda()
+    layer5 = RandPointCNN(  64, 128, dims, K, D,   50, knn_indices_func).cuda()
 
-    P  = np.random.rand(N,num_points,D).astype(np.float32)
-    F  = np.random.rand(N,num_points,C_in).astype(np.float32)
-    P = Variable(torch.from_numpy(P)).cuda()
-    F = Variable(torch.from_numpy(F)).cuda()
+    pts  = np.random.rand(N,num_points,dims).astype(np.float32)
+    fts  = np.random.rand(N,num_points,C_in).astype(np.float32)
+    pts = Variable(torch.from_numpy(pts)).cuda()
+    fts = Variable(torch.from_numpy(fts)).cuda()
 
     if True:
-        P, F = layer1((P, F))
+        pts, fts = layer1((pts, fts))
     else:
-        plot(P, F)
-        P, F = layer1((P, F))
-        plot(P, F)
-        P, F = layer2((P, F))
-        plot(P, F)
-        P, F = layer3((P, F))
-        plot(P, F)
-        P, F = layer4((P, F))
-        plot(P, F)
-        P, F = layer5((P, F))
-        plot(P, F)
+        plot(pts, fts)
+        pts, fts = layer1((pts, fts))
+        plot(pts, fts)
+        pts, fts = layer2((pts, fts))
+        plot(pts, fts)
+        pts, fts = layer3((pts, fts))
+        plot(pts, fts)
+        pts, fts = layer4((pts, fts))
+        plot(pts, fts)
+        pts, fts = layer5((pts, fts))
+        plot(pts, fts)

@@ -4,12 +4,12 @@ import numpy as np
 
 try:
     pass
-    # from .util import endchannels
+    # from .util import end_channels
 except:
-    # from util import endchannels
+    # from util import end_channels
     pass
 
-def endchannels(f, make_contiguous = False):
+def end_channels(f, make_contiguous = False):
     class wrapped_layer(nn.Module):
         def __init__(self):
             super(wrapped_layer, self).__init__()
