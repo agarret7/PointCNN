@@ -50,7 +50,7 @@ class Conv(nn.Module):
 
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size, bias = not with_bn)
         self.activation = activation
-        self.bn = nn.BatchNorm2d(out_channels) if with_bn else None
+        self.bn = nn.BatchNorm2d(out_channels, momentum = 0.9) if with_bn else None
 
     def forward(self, x):
         x = self.conv(x)
@@ -75,7 +75,7 @@ class SepConv(nn.Module):
         )
 
         self.activation = activation
-        self.bn = nn.BatchNorm2d(out_channels) if with_bn else None
+        self.bn = nn.BatchNorm2d(out_channels, momentum = 0.9) if with_bn else None
 
     def forward(self, x):
         x = self.conv(x)

@@ -1,4 +1,7 @@
+import os
+
 import math
+import random
 import data_utils
 import time
 
@@ -7,10 +10,17 @@ import torch
 from torch import nn
 from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 from pointcnn.core import rPointCNN
 from pointcnn.util import knn_indices_func_gpu
 from pointcnn.layers import Dense
+from visualize import *
+
+random.seed(0)
+
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 x = 2
 
@@ -44,29 +54,57 @@ class Classifier(nn.Module):
     def __init__(self):
         super(Classifier, self).__init__()
 
-        self.pcnn = nn.Sequential(
-            paPointCNN(  1,  32,  8, 1, 256),
-            paPointCNN( 32,  64,  8, 2, 256),
-            paPointCNN( 64,  96,  8, 4, 256),
+        self.pcnn1 = paPointCNN(  1,  32,  8, 1,  -1)
+        self.pcnn2 = nn.Sequential(
+            paPointCNN( 32,  64,  8, 2,  -1),
+            paPointCNN( 64,  96,  8, 4,  -1),
             paPointCNN( 96, 128, 12, 4, 120),
-            paPointCNN(128, 160, 12, 6, 120),
+            paPointCNN(128, 160, 12, 6, 120)
         )
 
         self.fcn = nn.Sequential(
             Dense(160, 128),
             Dense(128,  64, drop_rate = 0.5),
-            Dense(64, 10, activation = None)
+            Dense( 64,  10, with_bn = False, activation = None)
         )
 
-        self.log_softmax = nn.LogSoftmax()
-
     def forward(self, x):
-        x = self.pcnn(x)[1]  # grab features
+        x = self.pcnn1(x)
+        if False:
+            print("Making graph...")
+            k = make_dot(x[1])
+
+            print("Viewing...")
+            k.view()
+            print("DONE")
+
+            assert False
+        x = self.pcnn2(x)[1]  # grab features
+
         logits = self.fcn(x)
-        # logits = torch.mean(logits, dim = 1)
-        return logits
-        # log_probs = self.log_softmax(logits)
-        # return log_probs
+        logits_mean = torch.mean(logits, dim = 1)
+        return logits_mean
+
+"""
+def get_indices(batch_size, sample_num, point_num, random_sample = True):
+    indices = []
+    for i in range(batch_size):
+
+        if random_sample:
+            # point_num >= sample_num generally
+            choices = np.random.choice(point_num, sample_num, replace = (point_num < sample_num))
+        else:
+            # This modulo generally not used.
+            choices = np.arange(sample_num) % point_num
+
+        choices = np.expand_dims(choices, axis = 0)
+        b_idx_mat = np.full_like(choices, i)
+
+        # Each set of choices is paired with its batch index.
+        choices_2d = np.concatenate((b_idx_max, choices), axis = 0)
+        indices.append(choices_2d)
+    return np.stack(indices, axis = 1)  # (2, batch_size, 
+"""
 
 model = Classifier().cuda()
 
@@ -95,58 +133,129 @@ batch_num = batch_num_per_epoch * num_epochs
 training_set = mnist_dataset(data_train, label_train)
 training_loader = DataLoader(training_set, batch_size = batch_size)
 
+testing_batch_size = 256
 testing_set = mnist_dataset(data_val, label_val)
-testing_loader = DataLoader(testing_set, batch_size = 1)
+testing_loader = DataLoader(testing_set, batch_size = testing_batch_size)
+
+lr = 0.01
+decay_steps = 8000
+decay_rate = 0.6
+lr_min = 0.00001
 
 optimizer = torch.optim.SGD(model.parameters(), lr = 0.01, momentum = 0.9)
-loss_fn = nn.NLLLoss()
+loss_fn = nn.CrossEntropyLoss()
 
-for _ in range(num_epochs):
+global_step = 1
 
-    n = 0
+model_save_dir = os.path.join(CURRENT_DIR, "models", "mnist2")
+os.makedirs(model_save_dir, exist_ok = True)
+
+losses = []
+accuracies = []
+
+if False:
+    latest_model = sorted(os.listdir(model_save_dir))[-1]
+    model.load_state_dict(torch.load(os.path.join(model_save_dir, latest_model)))
+
+for e in range(1, num_epochs + 1):
+
+    print("EPOCH %i of %i" % (e, num_epochs))
+
+    m_loc = os.path.join(model_save_dir, "save_e%.4d" % e)
+    torch.save(model.state_dict(), m_loc)
+    np.savez_compressed(os.path.join(CURRENT_DIR, "losses"), losses)
+    np.savez_compressed(os.path.join(CURRENT_DIR, "accuracies"), accuracies)
+
+    # Decaying learning rate
+    if e > 1:
+        lr *= decay_rate ** (global_step // decay_steps)
+        if lr > lr_min:
+            print("NEW LEARNING RATE:", lr)
+            optimizer = torch.optim.SGD(model.parameters(), lr = lr, momentum = 0.9)
 
     for data, label in training_loader:
 
-        n += 1
+        model = model.train()
 
-        data = Variable(data).cuda()
-        label = Variable(label.long()).cuda()
+        label = label.long()
         P = data[:,:,:3]
         F = data[:,:,3:]
+
+        offset = int(random.gauss(0, sample_num // 8))
+        offset = max(offset, -sample_num // 4)
+        offset = min(offset, sample_num // 4)
+        sample_num_train = sample_num + offset
+
+        # indices = get_indices(batch_size, sample_num_train, point_num)
+        indices = np.random.choice(P.size()[1], sample_num_train, replace = False).tolist()
+        P_sampled = P[:,indices,:]
+        F_sampled = F[:,indices,:]
+        P_sampled = Variable(P_sampled).cuda()
+        F_sampled = Variable(F_sampled).cuda()
+
+        if False:
+            P_draw = P_sampled.data.cpu().numpy()
+            # fig = plt.figure()
+            # ax = fig.gca(projection = '3d')
+            # ax.scatter(P_draw[25,:,0], P_draw[25,:,1], P_draw[25,:,2], c = 'k')
+            # plt.show()
+
+            plt.style.use('grayscale')
+            plt.axis([-3, 3, -3, 3])
+            plt.scatter(P_draw[25,:,0], -P_draw[25,:,1], c = 1 - F_sampled[25,:,0], marker = ',', s = 25)
+            print("LABEL:", label[25])
+            plt.show()
 
         optimizer.zero_grad()
 
         t0 = time.time()
-        out = model((P, F))
+        out = model((P_sampled, F_sampled))
 
-        print(out)
-
-        loss = loss_fn(out, label)
+        loss = loss_fn(out, Variable(label.long()).cuda())
         loss.backward()
         optimizer.step()
         
-        print("loss:", loss.data[0])
+        if global_step % 25 == 0:
+            loss_v = loss.data[0]
+            print("Loss:", loss_v)
+        else:
+            loss_v = 0
 
-        if n % 25 == 0:
+        if global_step % 250 == 0:
+
             # Testing accuracy
-            num_testing = 0
-            total = 0
-            correct = 0
-            for data, label in testing_loader:
-                if num_testing > 100:
+            accuracy_sum = 0
+            testing_size = 4 # times testing_batch_size = 256
+            for t, (data, label) in enumerate(testing_loader):
+                if t >= testing_size:
                     break
-                else:
-                    num_testing += 1
-                data = Variable(data).cuda()
-                label = Variable(label.long()).cuda()
+
+                model = model.eval()
+
                 P = data[:,:,:3]
                 F = data[:,:,3:]
-                out = model((P, F))
+
+                offset = int(random.gauss(0, sample_num // 8))
+                offset = max(offset, -sample_num // 4)
+                offset = min(offset, sample_num // 4)
+                sample_num_train = sample_num + offset
+
+                # indices = get_indices(batch_size, sample_num_train, point_num)
+                indices = np.random.choice(P.size()[1], sample_num_train, replace = False).tolist()
+                P_sampled = P[:,indices,:]
+                F_sampled = F[:,indices,:]
+                P_sampled = Variable(P_sampled).cuda()
+                F_sampled = Variable(F_sampled).cuda()
+
+                out = model((P_sampled, F_sampled))
                 probs = nn.Softmax()(out)
-                # print(probs)
                 _, pred = probs.max(1)
-                total += 1
-                if pred.cpu().data[0] == label.cpu().data[0]:
-                    correct += 1
-            accuracy = correct / total
+                print(pred)
+                accuracy_sum += torch.mean((pred.data.cpu() == label.long()).float())
+            accuracy = accuracy_sum / testing_size
             print("accuracy:", accuracy)
+
+            losses.append(loss_v)
+            accuracies.append(accuracy)
+
+        global_step += 1
