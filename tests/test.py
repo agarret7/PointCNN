@@ -5,7 +5,7 @@ from torch.autograd import Variable
 import numpy as np
 
 from PointCNN import XConv, RandPointCNN, knn_indices_func_cpu
-from PointCNN.tests import plot_pts_and_fts
+from PointCNN.tests.util_funcs import plot_pts_and_fts
 
 np.random.seed(0)
 

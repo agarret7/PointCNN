@@ -1,3 +1,8 @@
+"""
+I got tired of cleaning the code base, so this file will stay as is
+probably, unless I really want it to be cleaner.
+"""
+
 import os
 
 import math
@@ -11,27 +16,21 @@ from torch import nn
 from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 
-from pointcnn.core import rPointCNN
-from pointcnn.util import knn_indices_func_gpu
-from pointcnn.layers import Dense
-from visualize import *
+from PointCNN import RandPointCNN
+from PointCNN import knn_indices_func_gpu
+from PointCNN.core.util_layers import Dense
+
+from PointCNN.mnist.visualize import make_dot
 
 random.seed(0)
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-x = 2
-
-# N_neighbors, dilution, N_rep, C_out
-# 8          , 1,        all  , 16 * x
-# 8          , 2,        all  , 32 * x
-# 8          , 4,        all  , 48 * x
-# 12         , 4,        120  , 64 * x
-# 12         , 6,        120  , 80 * x
-
-# Data_dim = 3
+# C_in, C_out, D, N_neighbors, dilution, N_rep, r_indices_func, C_lifted = None, mlp_width = 2
+# (a, b, c, d, e) == (C_in, C_out, N_neighbors, dilution, N_rep)
+# Abbreviated PointCNN constructor.
+AbbPointCNN = lambda a,b,c,d,e: RandPointCNN(a, b, 3, c, d, e, knn_indices_func_gpu)
 
 class mnist_dataset(Dataset):
 
@@ -41,25 +40,21 @@ class mnist_dataset(Dataset):
 
     def __len__(self):
         return len(self.data)
-    
+
     def __getitem__(self, i):
         return self.data[i], self.labels[i]
 
-# C_in, C_out, D, N_neighbors, dilution, N_rep, r_indices_func, C_lifted = None, mlp_width = 2
-# (a, b, c, d, e) == (C_in, C_out, N_neighbors, dilution, N_rep)
-paPointCNN = lambda a,b,c,d,e: rPointCNN(a, b, 3, c, d, e, knn_indices_func_gpu)
-
 class Classifier(nn.Module):
-    
+
     def __init__(self):
         super(Classifier, self).__init__()
 
-        self.pcnn1 = paPointCNN(  1,  32,  8, 1,  -1)
+        self.pcnn1 = AbbPointCNN(  1,  32,  8, 1,  -1)
         self.pcnn2 = nn.Sequential(
-            paPointCNN( 32,  64,  8, 2,  -1),
-            paPointCNN( 64,  96,  8, 4,  -1),
-            paPointCNN( 96, 128, 12, 4, 120),
-            paPointCNN(128, 160, 12, 6, 120)
+            AbbPointCNN( 32,  64,  8, 2,  -1),
+            AbbPointCNN( 64,  96,  8, 4,  -1),
+            AbbPointCNN( 96, 128, 12, 4, 120),
+            AbbPointCNN(128, 160, 12, 6, 120)
         )
 
         self.fcn = nn.Sequential(
@@ -84,27 +79,6 @@ class Classifier(nn.Module):
         logits = self.fcn(x)
         logits_mean = torch.mean(logits, dim = 1)
         return logits_mean
-
-"""
-def get_indices(batch_size, sample_num, point_num, random_sample = True):
-    indices = []
-    for i in range(batch_size):
-
-        if random_sample:
-            # point_num >= sample_num generally
-            choices = np.random.choice(point_num, sample_num, replace = (point_num < sample_num))
-        else:
-            # This modulo generally not used.
-            choices = np.arange(sample_num) % point_num
-
-        choices = np.expand_dims(choices, axis = 0)
-        b_idx_mat = np.full_like(choices, i)
-
-        # Each set of choices is paired with its batch index.
-        choices_2d = np.concatenate((b_idx_max, choices), axis = 0)
-        indices.append(choices_2d)
-    return np.stack(indices, axis = 1)  # (2, batch_size, 
-"""
 
 model = Classifier().cuda()
 
@@ -214,7 +188,7 @@ for e in range(1, num_epochs + 1):
         loss = loss_fn(out, Variable(label.long()).cuda())
         loss.backward()
         optimizer.step()
-        
+
         if global_step % 25 == 0:
             loss_v = loss.data[0]
             print("Loss:", loss_v)
