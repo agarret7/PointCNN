@@ -4,6 +4,6 @@ PyTorch implementation of PointCNN model specified in the white paper located he
 Current MNIST accuracy: ~96%
 
 My coding style is somewhat unique, but ultimately geared towards maximal
-readability. Along with extensive documentation in the code, I use type , and
-code comments indicating input/outputs shapes.  (x,y,z) just indicate that any
-value is accepted at runtime.
+readability. Along with extensive documentation in the code, I use type 
+annotations and code comments indicating input/outputs shapes.
+(x,y,z) just indicate that any value is accepted at runtime.
