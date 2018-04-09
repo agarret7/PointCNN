@@ -59,7 +59,7 @@ class Conv(nn.Module):
 
     def __init__(self, in_channels : int, out_channels : int,
                  kernel_size : Union[int, Tuple[int, int]], with_bn : bool = True,
-                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.relu()
+                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.ReLU()
                 ) -> None:
         """
         :param in_channels: Length of input featuers (first dimension).
