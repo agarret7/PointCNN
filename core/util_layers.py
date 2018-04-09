@@ -10,7 +10,13 @@ def EndChannels(f, make_contiguous = False):
 
         def __init__(self):
             super(WrappedLayer, self).__init__()
-            self.forward = lambda x: f(x.permute(0,3,1,2)).permute(0,2,3,1)
+            self.f = f
+
+        def forward(self, x):
+            x = x.permute(0,3,1,2)
+            x = self.f(x)
+            x = x.permute(0,2,3,1)
+            return x
 
     return WrappedLayer()
 
