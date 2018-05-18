@@ -27,7 +27,7 @@ class Dense(nn.Module):
 
     def __init__(self, in_features : int, out_features : int,
                  drop_rate : int = 0, with_bn : bool = True,
-                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.ReLU()
+                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.ELU()
                 ) -> None:
         """
         :param in_features: Length of input featuers (last dimension).
@@ -65,7 +65,7 @@ class Conv(nn.Module):
 
     def __init__(self, in_channels : int, out_channels : int,
                  kernel_size : Union[int, Tuple[int, int]], with_bn : bool = True,
-                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.ReLU()
+                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.ELU()
                 ) -> None:
         """
         :param in_channels: Length of input featuers (first dimension).
@@ -98,7 +98,7 @@ class SepConv(nn.Module):
     def __init__(self, in_channels : int, out_channels : int,
                  kernel_size : Union[int, Tuple[int, int]],
                  depth_multiplier : int = 1, with_bn : bool = True,
-                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.ReLU()
+                 activation : Callable[[UFloatTensor], UFloatTensor] = nn.ELU()
                  ) -> None:
         """
         :param in_channels: Length of input featuers (first dimension).

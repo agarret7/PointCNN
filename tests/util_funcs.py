@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 from PointCNN.core import UFloatTensor
 
 def plot_pts_and_fts(pts : UFloatTensor,  # (N, x, dims)
-                     fts : UFloatTensor   # (N, x, y)
+                     fts : UFloatTensor,  # (N, x, y)
+                     fts_scale : int
                     ) -> None:
     """
     Visualization function. Shows points and number of features, represented by
@@ -15,13 +16,15 @@ def plot_pts_and_fts(pts : UFloatTensor,  # (N, x, dims)
     with pts[:,p_idx,:].
     :param fts: Features such that pts[:,p_idx,:] is the feature associated
     with fts[:,p_idx,:].
+    :param fts_scale: Scale of size for fts.
     """
     if pts.is_cuda:
         pts = pts.cpu()
     num_F = fts.size()[2]
     pts = pts[0].data.numpy()
-    plt.scatter(pts[:,0], pts[:,1], s = num_F, c = "k")
+    plt.scatter(pts[:,0], pts[:,1], s = fts_scale * num_F, c = "k")
     plt.show()
+    input("Press ENTER to continue...")
     plt.cla()
 
 def plot_neighborhood(pts : UFloatTensor,          # (N, x, dims)
