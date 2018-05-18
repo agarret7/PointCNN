@@ -209,12 +209,13 @@ class RandPointCNN(nn.Module):
                  r_indices_func : Callable[[UFloatTensor,  # (N, P, dims)
                                             UFloatTensor,  # (N, x, dims)
                                             int, int],
-                                           ULongTensor]    # (N, P, K)
-                ) -> None:
+                                           ULongTensor],   # (N, P, K)
+                 sampling_method : str = "rand") -> None:
         """ See documentation for PointCNN. """
         super(RandPointCNN, self).__init__()
         self.pointcnn = PointCNN(C_in, C_out, dims, K, D, P, r_indices_func)
         self.P = P
+        self.sampling_method = sampling_method
 
     def forward(self, x : Tuple[UFloatTensor,  # (N, x, dims)
                                 UFloatTensor]  # (N, x, dims)
@@ -234,10 +235,48 @@ class RandPointCNN(nn.Module):
         pts, fts = x
         if 0 < self.P < pts.size()[1]:
             # Select random set of indices of subsampled points.
-            idx = np.random.choice(pts.size()[1], self.P, replace = False).tolist()
-            rep_pts = pts[:,idx,:]
+            if self.sampling_method == "rand":
+                idx = np.random.choice(pts.size()[1], self.P, replace = False).tolist()
+                rep_pts = pts[:,idx,:]
+            elif self.sampling_method == "fps":
+                idx = self.batch_fps(pts, self.P)
+                rep_pts = torch.stack([pts[n][i,:] for n,i in enumerate(idx)])
+            else:
+                raise ValueError("Unrecognized sampling method %s" % self.sampling_method)
         else:
             # All input points are representative points.
             rep_pts = pts
         rep_pts_fts = self.pointcnn((rep_pts, pts, fts))
         return rep_pts, rep_pts_fts
+
+    def batch_fps(self, batch_pts, K):
+        """ Found here: 
+        https://codereview.stackexchange.com/questions/179561/farthest-point-algorithm-in-python
+        """
+
+        if isinstance(batch_pts, torch.autograd.Variable):
+            batch_pts = batch_pts.data
+        if isinstance(batch_pts, (torch.FloatTensor, torch.cuda.FloatTensor)):
+            if batch_pts.is_cuda:
+                batch_pts = batch_pts.cpu()
+            batch_pts = batch_pts.numpy()
+
+        calc_distances = lambda p0, pts: ((p0 - pts)**2).sum(axis = 1)
+
+        def fps(x):
+            pts, K = x
+            D = pts.shape[1]
+            farthest_idx = np.zeros(K).astype(np.int32)
+            farthest_idx[0] = np.random.randint(len(pts))
+            distances = calc_distances(pts[farthest_idx[0]], pts)
+
+            for i in range(1, K):
+
+                farthest_idx[i] = np.argmax(distances)
+                farthest_pts = pts[farthest_idx[i]]
+                distances = np.minimum(distances, calc_distances(farthest_pts, pts))
+
+            return farthest_idx
+
+        batch_pts = list(map(fps, [(pts,K) for pts in batch_pts]))
+        return torch.from_numpy(np.stack(batch_pts, axis = 0)).long().cuda()
