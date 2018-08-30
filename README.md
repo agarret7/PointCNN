@@ -3,7 +3,12 @@ PyTorch implementation of PointCNN model specified in the white paper located he
 
 Current MNIST accuracy: ~98%
 
-My coding style is somewhat unique, but ultimately geared towards maximal
-readability. Along with extensive documentation in the code, I use type 
-annotations and code comments indicating input/outputs shapes.
-(x,y,z) just indicate that any value is accepted at runtime.
+```
+python ./download_datasets.py -d mnist -f ./
+python ./prepare_mnist_data.py -f ./mnist/zips
+python ./pointcnn_cls.py
+```
+
+Type annotations are liberally used in this project, including annotations
+indicating input/outputs shapes. (x,y,z) just indicate that any value is
+accepted at runtime.
